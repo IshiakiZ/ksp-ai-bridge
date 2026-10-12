@@ -5,6 +5,7 @@ version is on the repository's front page.
 
 **Setting up**
 
+* [The long description](The-long-description.md): everything the front page said before it was cut short, and what was tried on each system
 * [Installing](Installing.md)
 * [A model on your own computer](A-model-on-your-own-computer.md), instead of Claude
 * [Voice edition](Voice-edition.md): the ship talks, and listens
