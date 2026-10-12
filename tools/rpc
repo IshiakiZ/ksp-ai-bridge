@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Call one AI Bridge command from the shell:  tools/rpc status   |   tools/rpc goto '{"scene":"vab"}' [timeout]"""
+import json, os, sys, urllib.request
+
+KSP_DIR = os.environ.get("KSP_DIR") or os.path.expanduser("~/Library/Application Support/Steam/steamapps/common/Kerbal Space Program")
+
+def call(method, params=None, timeout=30):
+    with open(os.path.join(KSP_DIR, "GameData/AIBridge/PluginData/bridge.json")) as f:
+        info = json.load(f)
+    body = json.dumps({"method": method, "params": params or {}, "timeout": timeout}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{info['port']}/rpc", data=body,
+                                 headers={"Content-Type": "application/json", "X-AIBridge-Token": info["token"]})
+    with urllib.request.urlopen(req, timeout=timeout + 10) as resp:
+        return json.loads(resp.read())
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    params = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+    timeout = float(sys.argv[3]) if len(sys.argv) > 3 else 30
+    out = call(sys.argv[1], params, timeout)
+    if isinstance(out.get("result"), dict) and "base64" in out["result"]:
+        import base64
+        path = os.environ.get("SHOT", "/tmp/ksp_shot.jpg")
+        with open(path, "wb") as f:
+            f.write(base64.b64decode(out["result"].pop("base64")))
+        out["result"]["saved"] = path
+    print(json.dumps(out, indent=1))
