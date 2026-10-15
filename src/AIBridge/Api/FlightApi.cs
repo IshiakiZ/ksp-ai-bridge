@@ -70,7 +70,7 @@ namespace AIBridge.Api
             o.Add("name", v.GetDisplayName());
             o.Add("type", v.vesselType.ToString().ToLowerInvariant());
             o.Add("situation", v.situation.ToString());
-            o.Add("body", body.bodyName);
+            o.Add("body", Places.Name(body));
             o.Add("ut", R(Planetarium.GetUniversalTime(), 1));
             o.Add("met_s", R(v.missionTime, 1));
             o.Add("controllable", v.IsControllable);
@@ -176,7 +176,7 @@ namespace AIBridge.Api
         {
             var o = new JObj();
             CelestialBody body = orbit.referenceBody;
-            o.Add("body", body.bodyName);
+            o.Add("body", Places.Name(body));
             bool closed = orbit.eccentricity < 1.0;
             if (closed) o.Add("apoapsis_m", R(orbit.ApA, 0));
             o.Add("periapsis_m", R(orbit.PeA, 0));

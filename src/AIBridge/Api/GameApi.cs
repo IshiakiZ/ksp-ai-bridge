@@ -24,20 +24,20 @@ namespace AIBridge.Api
                 Vessel v = FlightApi.Active();
                 if (HighLogic.CurrentGame == null || HighLogic.CurrentGame.Mode != Game.Modes.SANDBOX) throw new ApiException("Only in sandbox saves.");
                 string name = a.Str("body") ?? v.mainBody.bodyName;
-                int index = FlightGlobals.Bodies.FindIndex(b => b.bodyName.Equals(name, StringComparison.OrdinalIgnoreCase));
+                int index = FlightGlobals.Bodies.IndexOf(Places.Body(name));
                 if (index < 0) throw new ApiException("No body named '" + name + "'.");
                 CelestialBody body = FlightGlobals.Bodies[index];
                 double altitude = a.Num("altitude_km", (body.atmosphere ? body.atmosphereDepth + 10000 : 15000) / 1000.0) * 1000.0;
                 Pilot.Autopilot.I.Release("orbit set for testing", true);
                 FlightGlobals.fetch.SetShipOrbit(index, 0.0, body.Radius + altitude, a.Num("inclination", 0), 0, 0, 0, 0);
-                return new JObj().Add("body", body.bodyName).Add("altitude_m", altitude);
+                return new JObj().Add("body", Places.Name(body)).Add("altitude_m", altitude);
             });
             Rpc.Sync("dev_set_position", "Development build only: put the vessel being flown at a place on (or over) any body, like the game's debug menu. params: {body, lat, lon, altitude_m (above the ground there, or above sea level with asl: true), asl: bool, ease: bool (default true: let down gently onto the surface), heading: the compass bearing it is set down facing (default 0, north). Kerbals standing near by are found a metre or two off a moment later (the game pins a standing kerbal to the world, and the pins do not move with the world when it is shifted): to set kerbals out side by side use eva put, sun_deg: instead of lon, the place on that latitude where the sun stands so high, land: bool (on a body with seas, the nearest dry spot to that)}", a =>
             {
                 Vessel v = FlightApi.Active();
                 if (HighLogic.CurrentGame == null || HighLogic.CurrentGame.Mode != Game.Modes.SANDBOX) throw new ApiException("Only in sandbox saves.");
                 string name = a.Str("body") ?? v.mainBody.bodyName;
-                int index = FlightGlobals.Bodies.FindIndex(b => b.bodyName.Equals(name, StringComparison.OrdinalIgnoreCase));
+                int index = FlightGlobals.Bodies.IndexOf(Places.Body(name));
                 if (index < 0) throw new ApiException("No body named '" + name + "'.");
                 CelestialBody body = FlightGlobals.Bodies[index];
                 Pilot.Autopilot.I.Release("position set for testing", true);
@@ -68,7 +68,7 @@ namespace AIBridge.Api
                         }
                 }
                 FlightGlobals.fetch.SetVesselPosition(index, lat, lon, altitude, 0.0, a.Num("heading", 0.0), asl, a.Bool("ease", true));
-                return new JObj().Add("body", body.bodyName).Add("lat", lat).Add("lon", lon).Add("altitude_m", altitude).Add("above", asl ? "sea level" : "the ground")
+                return new JObj().Add("body", Places.Name(body)).Add("lat", lat).Add("lon", lon).Add("altitude_m", altitude).Add("above", asl ? "sea level" : "the ground")
                     .Add("sun_deg", Math.Round(Math.Asin(Vector3d.Dot(body.GetSurfaceNVector(lat, lon), toSun)) * 180 / Math.PI, 1));
             });
             Rpc.Sync("dev_entry_model", "Development build only: the entry drag model against the parts as they are now. params: {drop}", a =>
@@ -643,7 +643,7 @@ namespace AIBridge.Api
             if (HighLogic.LoadedScene == GameScenes.FLIGHT && FlightGlobals.ready && FlightGlobals.ActiveVessel != null)
             {
                 Vessel v = FlightGlobals.ActiveVessel;
-                o.Add("vessel", new JObj().Add("name", v.GetDisplayName()).Add("situation", v.situation.ToString()).Add("body", v.mainBody.bodyName).Add("altitude_m", Math.Round(v.altitude)));
+                o.Add("vessel", new JObj().Add("name", v.GetDisplayName()).Add("situation", v.situation.ToString()).Add("body", Places.Name(v.mainBody)).Add("altitude_m", Math.Round(v.altitude)));
             }
             else if (HighLogic.LoadedScene == GameScenes.EDITOR && EditorLogic.fetch != null && EditorLogic.fetch.ship != null)
                 o.Add("editor_craft", new JObj().Add("name", EditorLogic.fetch.ship.shipName).Add("parts", EditorLogic.fetch.ship.parts.Count));
@@ -747,7 +747,12 @@ namespace AIBridge.Api
             Game game = GamePersistence.LoadGameCfg(node, match, true, false);
             if (game == null) throw new ApiException("Save '" + match + "' is not compatible with this version of KSP.");
             HighLogic.CurrentGame = game;
+            // (as the game's own main menu does: a newly installed mod's scenarios are added, the save is written with them
+            // before the game starts, and the mods that read a save as it loads are told; without the writing, what was
+            // added was lost when the space centre loaded the save from disk)
             GamePersistence.UpdateScenarioModules(game);
+            GamePersistence.SaveGame(game, "persistent", match, SaveMode.OVERWRITE);
+            GameEvents.onGameStatePostLoad.Fire(node);
             HighLogic.SaveFolder = match;
             game.startScene = GameScenes.SPACECENTER;
             host.Note("loading save '" + match + "'");

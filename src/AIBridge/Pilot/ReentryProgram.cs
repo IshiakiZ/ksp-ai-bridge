@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AIBridge.Api;
 using UnityEngine;
 
 namespace AIBridge.Pilot
@@ -126,7 +127,7 @@ namespace AIBridge.Pilot
                 ap.Stager.Enabled = false;
                 partsAtStart = v.parts.Count;
                 chuteCount = Chutes(v).Count;
-                if (!body.atmosphere) { Fail(body.bodyName + " has no atmosphere"); return; }
+                if (!body.atmosphere) { Fail(Places.Name(body) + " has no atmosphere"); return; }
                 if (v.orbit.PeA > body.atmosphereDepth && v.altitude > body.atmosphereDepth)
                 {
                     Fail("the periapsis (" + Math.Round(v.orbit.PeA / 1000.0, 1) + " km) is above the atmosphere (" + Math.Round(body.atmosphereDepth / 1000.0) + " km); a de-orbit burn is needed first");
@@ -142,7 +143,7 @@ namespace AIBridge.Pilot
                     int changed = 0;
                     foreach (ModuleParachute c in Chutes(v))
                         if (c.deploymentState == ModuleParachute.deploymentStates.STOWED && c.minAirPressureToOpen > 0.0105f) { c.minAirPressureToOpen = 0.01f; changed++; }
-                    if (changed > 0) ap.Log.Add("thin air on " + body.bodyName + ": set " + changed + " parachute" + (changed > 1 ? "s" : "") + " to open at 0.01 atm instead of the default");
+                    if (changed > 0) ap.Log.Add("thin air on " + Places.Name(body) + ": set " + changed + " parachute" + (changed > 1 ? "s" : "") + " to open at 0.01 atm instead of the default");
                 }
             }
 
@@ -293,7 +294,7 @@ namespace AIBridge.Pilot
                     if (ut - settledSince > 3.0)
                     {
                         int lost = partsAtStart - v.parts.Count;
-                        Finish((v.Splashed ? "splashed down on " : "landed on ") + body.bodyName + " at latitude " + Math.Round(v.latitude, 3) + ", longitude " + Math.Round(v.longitude, 3) +
+                        Finish((v.Splashed ? "splashed down on " : "landed on ") + Places.Name(body) + " at latitude " + Math.Round(v.latitude, 3) + ", longitude " + Math.Round(v.longitude, 3) +
                                (HasTarget ? ", " + Describe(Api.SurfaceApi.GroundDistance(body, v.latitude, v.longitude, TargetLat, TargetLon)) + " from " + TargetLabel : "") +
                                (double.IsNaN(touchdownSpeed) ? "" : ", touching down at " + Math.Round(touchdownSpeed, 1) + " m/s") + "; peak " + Math.Round(peakG, 1) + " g" +
                                (lost > 0 ? "; " + lost + " part" + (lost > 1 ? "s" : "") + " jettisoned or lost on the way down" : ""));

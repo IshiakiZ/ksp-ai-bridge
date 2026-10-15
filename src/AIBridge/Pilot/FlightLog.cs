@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AIBridge.Api;
 
 namespace AIBridge.Pilot
 {
@@ -103,7 +104,7 @@ namespace AIBridge.Pilot
 
         void OnSoi(GameEvents.HostedFromToAction<Vessel, CelestialBody> a)
         {
-            if (IsActive(a.host)) Add("entered the sphere of influence of " + a.to.bodyName + " (left " + a.from.bodyName + ")");
+            if (IsActive(a.host)) Add("entered the sphere of influence of " + Places.Name(a.to) + " (left " + Places.Name(a.from) + ")");
         }
 
         void OnCouple(GameEvents.FromToAction<Part, Part> a)

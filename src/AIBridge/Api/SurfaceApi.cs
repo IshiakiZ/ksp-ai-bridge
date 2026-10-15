@@ -25,17 +25,6 @@ namespace AIBridge.Api
             public string Label;
         }
 
-        /// <summary>Kerbal Space Center landmarks.</summary>
-        public static readonly Dictionary<string, double[]> KerbinPlaces = new Dictionary<string, double[]>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "launchpad", new[] { -0.0972, -74.5577 } },
-            { "runway", new[] { -0.0494, -74.6072 } },
-            { "runway_west", new[] { -0.0486, -74.7244 } },
-            { "runway_east", new[] { -0.0502, -74.4900 } },
-            { "ksc", new[] { -0.0972, -74.5577 } },
-            { "island_runway", new[] { -1.5176, -71.9100 } },
-        };
-
         public static bool HasSpot(Args a) => a.Has("lat") || a.Has("lon") || a.Has("target") || a.Has("place") || a.Has("distance_m");
 
         /// <summary>Work out which spot the caller means: coordinates, a vessel, a landmark, or a heading and distance from here.</summary>
@@ -55,15 +44,16 @@ namespace AIBridge.Api
                 Vessel other = NavApi.FindVessel(name);
                 if (other == null) throw new ApiException("No vessel named '" + name + "'. Use vessels to list them.");
                 if (other == v) throw new ApiException("That is the vessel being flown.");
-                if (other.mainBody != body) throw new ApiException("'" + other.GetDisplayName() + "' is at " + other.mainBody.bodyName + ", not " + body.bodyName + ".");
+                if (other.mainBody != body) throw new ApiException("'" + other.GetDisplayName() + "' is at " + Places.Name(other.mainBody) + ", not " + Places.Name(body) + ".");
                 if (!other.LandedOrSplashed) throw new ApiException("'" + other.GetDisplayName() + "' is not on the ground (" + other.situation + ").");
                 return new Spot { Lat = other.latitude, Lon = NormLon(other.longitude), Label = other.GetDisplayName() };
             }
             if (a.Has("place"))
             {
                 string place = a.Str("place").Trim().Replace(" ", "_");
-                if (!body.isHomeWorld) throw new ApiException("Named places exist only on " + FlightGlobals.GetHomeBody().bodyName + ".");
-                if (!KerbinPlaces.TryGetValue(place, out double[] ll)) throw new ApiException("Unknown place '" + place + "'. Known: " + string.Join(", ", new List<string>(KerbinPlaces.Keys).ToArray()) + ".");
+                if (!body.isHomeWorld) throw new ApiException("Named places exist only on " + Places.Name(FlightGlobals.GetHomeBody()) + ".");
+                Dictionary<string, double[]> named = Places.Named();
+                if (!named.TryGetValue(place, out double[] ll)) throw new ApiException("Unknown place '" + place + "'. Known: " + string.Join(", ", new List<string>(named.Keys).ToArray()) + ".");
                 return new Spot { Lat = ll[0], Lon = ll[1], Label = "the " + place.Replace("_", " ") };
             }
             if (a.Has("distance_m"))
@@ -74,7 +64,7 @@ namespace AIBridge.Api
                 s.Label = Math.Round(a.Num("distance_m")) + " m on heading " + Math.Round(heading);
                 return s;
             }
-            throw new ApiException("Say where: lat and lon, target (a landed vessel), place (" + string.Join(", ", new List<string>(KerbinPlaces.Keys).ToArray()) + "), or heading with distance_m.");
+            throw new ApiException("Say where: lat and lon, target (a landed vessel), place (" + string.Join(", ", new List<string>(Places.Named().Keys).ToArray()) + "), or heading with distance_m.");
         }
 
         public static double NormLon(double lon)
@@ -110,20 +100,6 @@ namespace AIBridge.Api
 
         // ---------------------------------------------------------------- aircraft
 
-        /// <summary>
-        /// Kerbal Space Center's runway (fully upgraded), measured from the game's own colliders: it runs
-        /// 2.5 km on heading 90.4 from the spawn point, 69.1 m high at the ends and 67.7 m in the middle
-        /// (it is flat while the planet curves away under it).
-        /// </summary>
-        static Runway Ksc(bool eastbound) => eastbound
-            ? new Runway { Name = "KSC runway 09", Lat = -0.0486, Lon = -74.7244, Heading = 90.4, Altitude = 68.5, Length = 2450, Width = 60 }
-            : new Runway { Name = "KSC runway 27", Lat = -0.0502, Lon = -74.4905, Heading = 270.4, Altitude = 68.5, Length = 2450, Width = 60 };
-
-        /// <summary>The old airfield on the island south-east of the space centre: a 1.15 km strip, 133 m up (also measured in the game).</summary>
-        static Runway Island(bool eastbound) => eastbound
-            ? new Runway { Name = "Island airfield 09", Lat = -1.5175, Lon = -71.9650, Heading = 90.1, Altitude = 133, Length = 1150, Width = 60 }
-            : new Runway { Name = "Island airfield 27", Lat = -1.5177, Lon = -71.8550, Heading = 270.1, Altitude = 133, Length = 1150, Width = 60 };
-
         /// <summary>How far before the threshold (negative) or past it the aircraft is, along the runway's direction.</summary>
         static double Along(Runway r, Vessel v)
         {
@@ -144,18 +120,18 @@ namespace AIBridge.Api
                 return r;
             }
             string name = (a.Str("runway") ?? "ksc").Trim().ToLowerInvariant().Replace(" ", "_").Replace("-", "_");
-            if (!v.mainBody.isHomeWorld) throw new ApiException("The named runways are on " + FlightGlobals.GetHomeBody().bodyName + ". Elsewhere give runway: {lat, lon, heading, altitude_m}.");
+            if (!v.mainBody.isHomeWorld) throw new ApiException("The named runways are on " + Places.Name(FlightGlobals.GetHomeBody()) + ". Elsewhere give runway: {lat, lon, heading, altitude_m}.");
             switch (name)
             {
-                case "ksc_09": case "ksc_east": case "09": return Ksc(true);
-                case "ksc_27": case "ksc_west": case "27": return Ksc(false);
+                case "ksc_09": case "ksc_east": case "09": return Places.Ksc(true);
+                case "ksc_27": case "ksc_west": case "27": return Places.Ksc(false);
                 case "ksc": case "runway": case "space_center":
                     // Use whichever end the aircraft is already on the approach side of.
-                    return Along(Ksc(true), v) < Ksc(true).Length / 2 ? Ksc(true) : Ksc(false);
-                case "island_09": return Island(true);
-                case "island_27": return Island(false);
+                    { Runway east = Places.Ksc(true); return Along(east, v) < east.Length / 2 ? east : Places.Ksc(false); }
+                case "island_09": return Places.Island(true);
+                case "island_27": return Places.Island(false);
                 case "island": case "island_airfield": case "island_runway":
-                    return Along(Island(true), v) < Island(true).Length / 2 ? Island(true) : Island(false);
+                    { Runway east = Places.Island(true); return Along(east, v) < east.Length / 2 ? east : Places.Island(false); }
             }
             throw new ApiException("Unknown runway '" + name + "'. Use ksc, ksc_09, ksc_27, island, island_09, island_27, or give runway: {lat, lon, heading, altitude_m, length_m}.");
         }
@@ -163,7 +139,7 @@ namespace AIBridge.Api
         static void RequireAircraft(Vessel v)
         {
             if (!v.IsControllable) throw new ApiException("The vessel is not controllable (no crew, no powered probe core, or no signal).");
-            if (!v.mainBody.atmosphere) throw new ApiException(v.mainBody.bodyName + " has no atmosphere; wings do nothing here.");
+            if (!v.mainBody.atmosphere) throw new ApiException(Places.Name(v.mainBody) + " has no atmosphere; wings do nothing here.");
             if (Aero.WingRating(v, out FloatCurve _) < 0.05) throw new ApiException("This vessel has no wings.");
         }
 
@@ -286,7 +262,7 @@ namespace AIBridge.Api
             Spot spot;
             if (a.Has("body"))
             {
-                body = FlightGlobals.Bodies.Find(b => b.bodyName.Equals(a.Str("body"), StringComparison.OrdinalIgnoreCase));
+                body = Places.Body(a.Str("body"));
                 if (body == null) throw new ApiException("No body named '" + a.Str("body") + "'.");
                 if (!a.Has("lat") || !a.Has("lon")) throw new ApiException("Give lat and lon.");
                 spot = new Spot { Lat = a.Num("lat"), Lon = NormLon(a.Num("lon")) };
@@ -297,10 +273,10 @@ namespace AIBridge.Api
                 body = v.mainBody;
                 spot = HasSpot(a) ? Resolve(a, v) : new Spot { Lat = v.latitude, Lon = NormLon(v.longitude), Label = "under the vessel" };
             }
-            if (!body.hasSolidSurface) throw new ApiException(body.bodyName + " has no solid surface.");
+            if (!body.hasSolidSurface) throw new ApiException(Places.Name(body) + " has no solid surface.");
 
             var o = new JObj();
-            o.Add("body", body.bodyName);
+            o.Add("body", Places.Name(body));
             o.Add("lat", Math.Round(spot.Lat, 5));
             o.Add("lon", Math.Round(spot.Lon, 5));
             double height = body.TerrainAltitude(spot.Lat, spot.Lon, true);

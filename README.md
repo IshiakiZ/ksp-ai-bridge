@@ -32,6 +32,8 @@ Then start KSP, open a new Claude session in this folder, approve the `ksp` serv
 * **Pause AI** refuses every further command until you press Resume. **Take controls** hands the ship back.
 * The server listens only on `127.0.0.1`, with a token that changes at every game start.
 
+![The AI Bridge panel during a launch: a question asked and answered, an order given and taken](docs/img/chat-panel.jpg)
+
 ## Good to know
 
 * Flown with no human input: a Mun landing and return, landings within tens of metres of chosen coordinates on the
@@ -41,7 +43,8 @@ Then start KSP, open a new Claude session in this folder, approve the `ksp` serv
 ## Works on
 
 Mac: made and flown here. Windows 11: the plugin, the server, flights to orbit and back, and the voice edition's
-models were tried; what 0.7.0 added (never silent) on the Mac only so far. Linux: never run.
+models were tried; what 0.7.0 and 0.8.0 added (never silent; the clock set without a warp) on the Mac only so far.
+Linux: never run.
 
 **More:** [the long description](docs/The-long-description.md) (everything in full) and the rest of the
 [wiki](docs/README.md): the tools and autopilots, the voice edition, a model on your own computer.

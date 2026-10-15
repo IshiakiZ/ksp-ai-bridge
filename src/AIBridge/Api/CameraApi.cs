@@ -95,7 +95,7 @@ namespace AIBridge.Api
             string focus = a.Str("focus");
             if (!string.IsNullOrEmpty(focus))
             {
-                CelestialBody body = FlightGlobals.Bodies.Find(b => b.bodyName.Equals(focus, StringComparison.OrdinalIgnoreCase));
+                CelestialBody body = Places.Body(focus);
                 if (body != null) cam.SetTarget(body);
                 else if (focus.Equals("vessel", StringComparison.OrdinalIgnoreCase) && FlightGlobals.ActiveVessel != null && FlightGlobals.ActiveVessel.mapObject != null)
                     cam.SetTarget(FlightGlobals.ActiveVessel.mapObject);

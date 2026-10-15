@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AIBridge.Api;
 using UnityEngine;
 
 namespace AIBridge.Pilot
@@ -89,7 +90,7 @@ namespace AIBridge.Pilot
             throw new ApiException("detail must be quiet, normal or chatty.");
         }
 
-        static string Place(CelestialBody body) => body == null ? "the surface" : body.bodyName == "Mun" ? "the Mun" : body.bodyName;
+        static string Place(CelestialBody body) => body == null ? "the surface" : Places.Spoken(body);
 
         static string Km(double metres)
         {

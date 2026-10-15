@@ -116,8 +116,8 @@ namespace AIBridge.Api
             }
             if (o2 == null || o2.referenceBody != body)
             {
-                string where = o2 != null ? o2.referenceBody.bodyName : "something else";
-                throw new ApiException("'" + target.GetName() + "' orbits " + where + ", not " + body.bodyName + ". This planner handles targets orbiting the same body as your vessel (its moons, other vessels) and bodies that share your body's parent (other planets from a planetary orbit). Get into orbit around the right body first, or build the node by hand with add_node.");
+                string where = o2 != null ? Places.Name(o2.referenceBody) : "something else";
+                throw new ApiException("'" + target.GetName() + "' orbits " + where + ", not " + Places.Name(body) + ". This planner handles targets orbiting the same body as your vessel (its moons, other vessels) and bodies that share your body's parent (other planets from a planetary orbit). Get into orbit around the right body first, or build the node by hand with add_node.");
             }
             if (o1.eccentricity >= 1.0) throw new ApiException("The vessel is on an escape trajectory; get into a closed orbit first.");
 
@@ -195,9 +195,9 @@ namespace AIBridge.Api
             host.Note("planned transfer to " + target.GetName() + ": " + Math.Round(node.DeltaV.magnitude, 1) + " m/s");
             var result = new JObj().Add("nodes", NavApi.Nodes(v));
             if (targetBody != null && PatchAround(node, targetBody) == null)
-                result.Add("warning", "The search did not find an encounter with " + targetBody.bodyName + ". Check that your orbit is roughly circular and in the same plane as the target (match_planes), then plan again.");
+                result.Add("warning", "The search did not find an encounter with " + Places.Name(targetBody) + ". Check that your orbit is roughly circular and in the same plane as the target (match_planes), then plan again.");
             else if (targetBody != null)
-                result.Add("next_step", "execute_node, then warp to=soi, then plan circularize at periapsis around " + targetBody.bodyName + " and execute it to capture.");
+                result.Add("next_step", "execute_node, then warp to=soi, then plan circularize at periapsis around " + Places.Name(targetBody) + " and execute it to capture.");
             c.Result = result;
         }
 
@@ -225,7 +225,7 @@ namespace AIBridge.Api
             Orbit park = v.orbit;
             CelestialBody home = park.referenceBody;
             CelestialBody sun = home.referenceBody;
-            if (park.eccentricity >= 1.0) throw new ApiException("Get into a closed parking orbit around " + home.bodyName + " first.");
+            if (park.eccentricity >= 1.0) throw new ApiException("Get into a closed parking orbit around " + Places.Name(home) + " first.");
 
             double now = Planetarium.GetUniversalTime();
             double mu = sun.gravParameter;
@@ -284,16 +284,16 @@ namespace AIBridge.Api
             yield return Search(x, new[] { park.period / 300.0, 6.0, 4.0 }, new[] { 0.002, 0.0002, 0.0002 }, cost, 3000);
 
             Orbit result = PatchAround(node, target);
-            host.Note("planned transfer to " + target.bodyName + ": " + Math.Round(node.DeltaV.magnitude, 1) + " m/s in " + Span(node.UT - now));
+            host.Note("planned transfer to " + Places.Name(target) + ": " + Math.Round(node.DeltaV.magnitude, 1) + " m/s in " + Span(node.UT - now));
             var o = new JObj().Add("nodes", NavApi.Nodes(v));
             o.Add("departure_in", Span(node.UT - now));
             if (result != null)
-                o.Add("arrival", new JObj().Add("body", target.bodyName).Add("periapsis_m", Math.Round(result.PeA)).Add("reaches_its_soi_in", Span(result.StartUT - now)));
+                o.Add("arrival", new JObj().Add("body", Places.Name(target)).Add("periapsis_m", Math.Round(result.PeA)).Add("reaches_its_soi_in", Span(result.StartUT - now)));
             else
             {
                 Orbit cruise = PatchAround(node, sun);
                 double miss = cruise != null ? OrbitMath.ClosestApproach(cruise, ot, cruise.StartUT, transferTime * 1.4, out double _) : double.NaN;
-                o.Add("warning", "No encounter with " + target.bodyName + " was found; the closest pass is about " + Math.Round(miss / 1e6) + " thousand km. Execute this burn, then plan a mid-course correction with add_node / edit_node while watching target_approach.");
+                o.Add("warning", "No encounter with " + Places.Name(target) + " was found; the closest pass is about " + Math.Round(miss / 1e6) + " thousand km. Execute this burn, then plan a mid-course correction with add_node / edit_node while watching target_approach.");
             }
             o.Add("next_step", "warp to=node, execute_node, warp to=soi (several times), fine-tune with a small correction burn if needed, then circularize at periapsis.");
             c.Result = o;
@@ -312,7 +312,7 @@ namespace AIBridge.Api
             string bodyName = c.Args.Str("body");
             if (!string.IsNullOrEmpty(bodyName))
             {
-                body = FlightGlobals.Bodies.Find(b => b.bodyName.Equals(bodyName, StringComparison.OrdinalIgnoreCase));
+                body = Places.Body(bodyName);
                 if (body == null) throw new ApiException("No body named '" + bodyName + "'.");
             }
             else
@@ -357,8 +357,8 @@ namespace AIBridge.Api
             Orbit result = PatchAround(node, body);
             host.Note("planned course correction: " + Math.Round(node.DeltaV.magnitude, 2) + " m/s");
             var o = new JObj().Add("nodes", NavApi.Nodes(v));
-            if (result == null) o.Add("warning", "The search found no trajectory that reaches " + body.bodyName + " from here. The miss may be too large for a small correction.");
-            else o.Add("arrival", new JObj().Add("body", body.bodyName).Add("periapsis_m", Math.Round(result.PeA)).Add("inclination_deg", Math.Round(result.inclination, 1)));
+            if (result == null) o.Add("warning", "The search found no trajectory that reaches " + Places.Name(body) + " from here. The miss may be too large for a small correction.");
+            else o.Add("arrival", new JObj().Add("body", Places.Name(body)).Add("periapsis_m", Math.Round(result.PeA)).Add("inclination_deg", Math.Round(result.inclination, 1)));
             c.Result = o;
         }
 
@@ -371,7 +371,7 @@ namespace AIBridge.Api
             CelestialBody moon = o1.referenceBody;
             CelestialBody parent = moon.referenceBody;
             if (parent == null || parent == moon || moon.orbit == null)
-                throw new ApiException("'return' is for coming home from a moon. You are orbiting " + moon.bodyName + ", which has no parent body to return to.");
+                throw new ApiException("'return' is for coming home from a moon. You are orbiting " + Places.Name(moon) + ", which has no parent body to return to.");
             if (o1.eccentricity >= 1.0) throw new ApiException("The vessel is already on an escape trajectory. Use nodes to see where it leads.");
 
             double desiredPe = c.Args.Has("periapsis_km") ? c.Args.Num("periapsis_km") * 1000.0 : (parent.atmosphere ? parent.atmosphereDepth * 0.45 : Math.Max(15000, parent.Radius * 0.1));
@@ -416,10 +416,10 @@ namespace AIBridge.Api
             yield return Search(x, new[] { o1.period / 150.0, 3.0 }, new[] { 0.05, 0.004 }, cost, 300);
 
             Orbit result = PatchAround(node, parent);
-            host.Note("planned return to " + parent.bodyName + ": " + Math.Round(node.DeltaV.magnitude, 1) + " m/s");
+            host.Note("planned return to " + Places.Name(parent) + ": " + Math.Round(node.DeltaV.magnitude, 1) + " m/s");
             var o = new JObj().Add("nodes", NavApi.Nodes(v));
-            if (result == null) o.Add("warning", "The search did not find a trajectory that escapes " + moon.bodyName + ". Is there enough delta-v, and is the orbit roughly circular?");
-            else o.Add("arrival", new JObj().Add("body", parent.bodyName).Add("periapsis_m", Math.Round(result.PeA)).Add("leaves_" + moon.bodyName.ToLowerInvariant() + "_soi_in_s", Math.Round(result.StartUT - now)));
+            if (result == null) o.Add("warning", "The search did not find a trajectory that escapes " + Places.Name(moon) + ". Is there enough delta-v, and is the orbit roughly circular?");
+            else o.Add("arrival", new JObj().Add("body", Places.Name(parent)).Add("periapsis_m", Math.Round(result.PeA)).Add("leaves_" + Places.Name(moon).ToLowerInvariant() + "_soi_in_s", Math.Round(result.StartUT - now)));
             c.Result = o;
         }
 

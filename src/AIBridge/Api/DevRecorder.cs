@@ -44,7 +44,7 @@ namespace AIBridge.Api
         public static void Register(BridgeHost h)
         {
             host = h;
-            Rpc.Sync("dev_record", "Development build only: record a scripted stretch of the game. params: {folder, seconds, fps (60), sound: bool (record the sound at normal speed instead of pictures), watch: bool (no pictures and no folder: the camera held so for so long, and the frames a second drawn meanwhile given in dev_record_status as fps), live: bool (pictures of the game as it really runs, as many as it draws, instead of frame-locked; their times go to times.txt), crop: [x, y, w, h] (live only), hide_ui (true), quality (92), look_at: {east, north, up, surface, hold: place|ship (a place on the planet, or one that goes along with the ship; by default the first unless the ship is fast or in orbit)}, camera: {distance, pitch, heading}, orbit_deg_s, caption, cues: [{at: seconds, do: explode (at_look: true puts it where the camera looks)|destroy|caption|fx|camera|message|rpc, ...}]}", Start);
+            Rpc.Sync("dev_record", "Development build only: record a scripted stretch of the game. params: {folder, seconds, fps (60), sound: bool (record the sound at normal speed instead of pictures), watch: bool (no pictures and no folder: the camera held so for so long, and the frames a second drawn meanwhile given in dev_record_status as fps), live: bool (pictures of the game as it really runs, as many as it draws, instead of frame-locked; their times go to times.txt), crop: [x, y, w, h] (live only), hide_ui (true), quality (92), look_at: {east, north, up, surface, hold: place|ship (a place on the planet, or one that goes along with the ship; by default the first unless the ship is fast or in orbit)}, camera: {distance, pitch, heading}, orbit_deg_s, orbit_from and orbit_until (seconds: the camera turned only between them), caption, cues: [{at: seconds, do: explode (at_look: true puts it where the camera looks)|destroy|caption|fx|camera|message|rpc, ...}]}", Start);
             Rpc.Sync("dev_record_status", "Development build only: progress of the recording.", a => Status()).AlwaysAllowed = true;
             Rpc.Sync("dev_record_stop", "Development build only: stop the recording.", a => { stopRequested = true; return Status(); });
             Rpc.Sync("dev_ambient", "Development build only: read Unity's ambient light as the game has it, and optionally hold it at something else for a while (to see what the game's shaders make of it). params: {mode: flat|trilight, sky: [r,g,b], equator: [r,g,b], ground: [r,g,b], hold_s (20)}", Ambient).AlwaysAllowed = true;
@@ -220,7 +220,7 @@ namespace AIBridge.Api
         {
             Prepare(a);
             int quality = (int)Pilot.OrbitMath.Clamp(a.Num("quality", 92), 40, 100);
-            float orbit = (float)a.Num("orbit_deg_s", 0);
+            float orbit = (float)a.Num("orbit_deg_s", 0), orbitFrom = (float)a.Num("orbit_from", 0), orbitUntil = (float)a.Num("orbit_until", 1e9);
             for (int n = 0; n < 12; n++) yield return null;       // let the camera and the interface settle
             Time.captureFramerate = fps;
             var picture = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
@@ -232,7 +232,7 @@ namespace AIBridge.Api
             {
                 double t = frame / (double)fps;
                 while (next < cues.Count && cues[next].At <= t + 1e-6) Run(cues[next++].What);
-                if (orbit != 0f && FlightCamera.fetch != null) FlightCamera.fetch.camHdg += orbit * Mathf.Deg2Rad / fps;
+                if (orbit != 0f && t >= orbitFrom && t < orbitUntil && FlightCamera.fetch != null) FlightCamera.fetch.camHdg += orbit * Mathf.Deg2Rad / fps;
                 HoldTarget();
                 yield return WaitFrameEnd.Instance;
                 clock.Append(DateTime.Now.ToString("HH:mm:ss.fff", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
@@ -255,7 +255,7 @@ namespace AIBridge.Api
         {
             Prepare(a);
             int quality = (int)Pilot.OrbitMath.Clamp(a.Num("quality", 92), 40, 100);
-            float orbit = (float)a.Num("orbit_deg_s", 0);
+            float orbit = (float)a.Num("orbit_deg_s", 0), orbitFrom = (float)a.Num("orbit_from", 0), orbitUntil = (float)a.Num("orbit_until", 1e9);
             List<object> crop = a.List("crop");
             for (int n = 0; n < 12; n++) yield return null;
             int x = 0, y = 0, w = Screen.width, h = Screen.height;
@@ -273,7 +273,7 @@ namespace AIBridge.Api
                 double t = Time.realtimeSinceStartup - started;
                 if (t >= seconds) break;
                 while (next < cues.Count && cues[next].At <= t) Run(cues[next++].What);
-                if (orbit != 0f && FlightCamera.fetch != null) FlightCamera.fetch.camHdg += orbit * Mathf.Deg2Rad * Time.unscaledDeltaTime;
+                if (orbit != 0f && t >= orbitFrom && t < orbitUntil && FlightCamera.fetch != null) FlightCamera.fetch.camHdg += orbit * Mathf.Deg2Rad * Time.unscaledDeltaTime;
                 HoldTarget();
                 yield return WaitFrameEnd.Instance;
                 picture.ReadPixels(new Rect(x, Screen.height - y - h, w, h), 0, 0, false);

@@ -1,4 +1,5 @@
 using System;
+using AIBridge.Api;
 using UnityEngine;
 
 namespace AIBridge.Pilot
@@ -265,7 +266,7 @@ namespace AIBridge.Pilot
                     if (!v.LandedOrSplashed) { state = State.FinalDescent; break; }
                     if (ut - settledSince > 2.5)
                     {
-                        Finish((v.Splashed ? "splashed down on " : "landed on ") + body.bodyName + " at latitude " + Math.Round(v.latitude, 4) + ", longitude " + Math.Round(v.longitude, 4) +
+                        Finish((v.Splashed ? "splashed down on " : "landed on ") + Places.Name(body) + " at latitude " + Math.Round(v.latitude, 4) + ", longitude " + Math.Round(v.longitude, 4) +
                                ", altitude " + Math.Round(v.altitude) + " m" + (HasTarget ? ", " + Math.Round(distance) + " m from " + TargetLabel : "") + "; " + RemainingDv(v) + " m/s of delta-v left");
                     }
                     break;

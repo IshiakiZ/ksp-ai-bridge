@@ -1,4 +1,5 @@
 using System;
+using AIBridge.Api;
 using UnityEngine;
 
 namespace AIBridge.Pilot
@@ -142,7 +143,7 @@ namespace AIBridge.Pilot
 
         static string Describe(Orbit o)
         {
-            string s = "Orbit around " + o.referenceBody.bodyName + ": ";
+            string s = "Orbit around " + Places.Name(o.referenceBody) + ": ";
             if (o.eccentricity < 1.0) s += "apoapsis " + Math.Round(o.ApA / 1000, 1) + " km, ";
             return s + "periapsis " + Math.Round(o.PeA / 1000, 1) + " km, inclination " + Math.Round(o.inclination, 2) + "°";
         }

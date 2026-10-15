@@ -52,7 +52,7 @@ namespace AIBridge.Api
             ExperimentSituations situation = ScienceUtil.GetExperimentSituation(v);
             var o = new JObj();
             o.Add("situation", situation.ToString());
-            o.Add("body", v.mainBody.bodyName);
+            o.Add("body", Places.Name(v.mainBody));
             o.Add("biome", ScienceUtil.GetExperimentBiome(v.mainBody, v.latitude, v.longitude));
             if (HighLogic.CurrentGame != null && HighLogic.CurrentGame.Mode == Game.Modes.SANDBOX) o.Add("note", "sandbox save: science points are not tracked");
             var list = new List<object>();

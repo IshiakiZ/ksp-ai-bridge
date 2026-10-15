@@ -27,7 +27,7 @@ import urllib.request
 sys.modules.setdefault("ksp_mcp", sys.modules[__name__])
 
 SERVER_NAME = "ksp-ai-bridge"
-SERVER_VERSION = "0.7.0"
+SERVER_VERSION = "0.8.0"
 PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
 # --------------------------------------------------------------------------- locating the game

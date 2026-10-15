@@ -1,5 +1,6 @@
 using System;
 using KSP.UI.Screens;
+using AIBridge.Api;
 using UnityEngine;
 
 namespace AIBridge.Pilot
@@ -199,7 +200,7 @@ namespace AIBridge.Pilot
                     if (remaining <= 0.3 || (orbit.PeA > TargetAltitude - 1500 && orbit.eccentricity < 0.002))
                     {
                         ap.SetThrottle(0);
-                        Finish("in orbit around " + body.bodyName + ": apoapsis " + Math.Round(orbit.ApA / 1000, 1) + " km, periapsis " + Math.Round(orbit.PeA / 1000, 1) + " km, inclination " + Math.Round(orbit.inclination, 2) + "°");
+                        Finish("in orbit around " + Places.Name(body) + ": apoapsis " + Math.Round(orbit.ApA / 1000, 1) + " km, periapsis " + Math.Round(orbit.PeA / 1000, 1) + " km, inclination " + Math.Round(orbit.inclination, 2) + "°");
                         break;
                     }
                     CheckPropulsion(ap, v, ut, "during circularisation (periapsis " + Math.Round(orbit.PeA / 1000, 1) + " km)");

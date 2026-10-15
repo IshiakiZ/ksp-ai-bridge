@@ -26,6 +26,7 @@ namespace AIBridge.Api
 
             Rpc.Async("wait", "Block until something happens. params: {timeout_s, until: {...}, stop_on_event}", Wait).AlwaysAllowed = true;
             Rpc.Async("warp", "Time warp. params: {to: apoapsis|periapsis|node|soi, seconds, ut, lead_s, rate, timeout_s}", WarpCmd);
+            Rpc.Async("set_time", "Set the game's clock straight to a later time, without a warp: craft are held on rails for the moment it takes, as a warp holds them (landed ones stay where they stand, orbiting ones go on along their orbits). Forward only. params: {ut, seconds or hours (on from now), sun: degrees above the horizon at the craft (at the space centre outside flight), rising: true (morning, as given) or false (evening)}", SetTimeCmd);
 
             Rpc.Sync("bodies", "Planets and moons with the numbers needed for planning. params: {name}", Bodies).AlwaysAllowed = true;
             Rpc.Sync("vessels", "All vessels in the save. params: {include_debris}", Vessels).AlwaysAllowed = true;
@@ -45,8 +46,8 @@ namespace AIBridge.Api
             double floor = body.atmosphere ? body.atmosphereDepth : 5000;
             var p = new AscentProgram();
             p.TargetAltitude = a.Has("altitude_km") ? a.Num("altitude_km") * 1000.0 : a.Num("altitude_m", body.atmosphere ? body.atmosphereDepth + 10000 : Math.Max(15000, body.Radius * 0.05));
-            if (p.TargetAltitude < floor + 1000) throw new ApiException("Target altitude must be above " + Math.Round((floor + 1000) / 1000.0) + " km for " + body.bodyName + ".");
-            if (p.TargetAltitude > body.sphereOfInfluence - body.Radius) throw new ApiException("Target altitude is outside " + body.bodyName + "'s sphere of influence.");
+            if (p.TargetAltitude < floor + 1000) throw new ApiException("Target altitude must be above " + Math.Round((floor + 1000) / 1000.0) + " km for " + Places.Name(body) + ".");
+            if (p.TargetAltitude > body.sphereOfInfluence - body.Radius) throw new ApiException("Target altitude is outside " + Places.Name(body) + "'s sphere of influence.");
             p.Inclination = a.Num("inclination", 0);
             if (a.Has("turn_start_speed")) p.TurnStartSpeed = Math.Max(5, a.Num("turn_start_speed"));
             if (a.Has("turn_end_altitude_km")) p.TurnEndAltitude = a.Num("turn_end_altitude_km") * 1000.0;
@@ -82,7 +83,7 @@ namespace AIBridge.Api
             Vessel v = FlightApi.Active();
             if (v.LandedOrSplashed) throw new ApiException("The vessel is already on the surface.");
             CelestialBody body = v.mainBody;
-            if (!body.hasSolidSurface) throw new ApiException(body.bodyName + " has no surface to land on.");
+            if (!body.hasSolidSurface) throw new ApiException(Places.Name(body) + " has no surface to land on.");
             bool warp = a.Bool("warp", true), autostage = a.Bool("autostage", true);
             return body.atmosphere && v.altitude < body.sphereOfInfluence ? LandInAtmosphere(a, v, warp) : LandOnAirless(a, v, warp, autostage);
         }
@@ -300,7 +301,7 @@ namespace AIBridge.Api
                 for (Orbit p = planned; p != null && p.activePatch; p = p.nextPatch)
                 {
                     if (p.referenceBody == body)
-                        return new JObj().Add("encounter", body.bodyName).Add("periapsis_m", R(p.PeA, 0)).Add("arrives_in_s", R(p.StartUT - Planetarium.GetUniversalTime(), 0)).Add("inclination_deg", R(p.inclination, 1));
+                        return new JObj().Add("encounter", Places.Name(body)).Add("periapsis_m", R(p.PeA, 0)).Add("arrives_in_s", R(p.StartUT - Planetarium.GetUniversalTime(), 0)).Add("inclination_deg", R(p.inclination, 1));
                     if (p.patchEndTransition == Orbit.PatchTransitionType.FINAL) break;
                 }
             }
@@ -488,7 +489,7 @@ namespace AIBridge.Api
             if (u.Has("situation"))
                 foreach (string s in u.Strings("situation"))
                     if (v.situation.ToString().Equals(s, StringComparison.OrdinalIgnoreCase)) return "situation is " + v.situation;
-            if (u.Has("body") && v.mainBody.bodyName.Equals(u.Str("body"), StringComparison.OrdinalIgnoreCase)) return "now in the sphere of influence of " + v.mainBody.bodyName;
+            if (u.Has("body") && v.mainBody == Places.Body(u.Str("body"))) return "now in the sphere of influence of " + Places.Name(v.mainBody);
             if (u.Has("node_in_below") && v.patchedConicSolver != null && v.patchedConicSolver.maneuverNodes.Count > 0 &&
                 v.patchedConicSolver.maneuverNodes[0].UT - Planetarium.GetUniversalTime() < u.Num("node_in_below")) return "maneuver node is closer than " + u.Num("node_in_below") + " s";
             if (u.Has("distance_to_target_below") && v.targetObject != null && v.targetObject.GetTransform() != null &&
@@ -546,7 +547,7 @@ namespace AIBridge.Api
         {
             var o = new JObj();
             o.Add("situation", v.situation.ToString());
-            o.Add("body", v.mainBody.bodyName);
+            o.Add("body", Places.Name(v.mainBody));
             o.Add("met_s", R(v.missionTime, 0));
             o.Add("altitude_m", R(v.altitude, 0));
             if (v.radarAltitude < 20000 && !v.Splashed) o.Add("height_above_ground_m", R(v.radarAltitude, 0));
@@ -588,6 +589,94 @@ namespace AIBridge.Api
             TimeWarp.fetch.Mode = TimeWarp.Modes.HIGH;
         }
 
+        /// <summary>
+        /// The game's clock set straight to a later time (the owner, 2026-10-13: "make it so that you can change the time
+        /// without doing time warp"). The game's own Planetarium.SetUniversalTime only sets the number: a craft in physics
+        /// would then stand where it stood while the planet turned under it. So, as a warp does, every loaded craft is put
+        /// on rails first (a landed one is then held by its place on the planet, an orbiting one by its orbit), the clock is
+        /// set, the game is given a few frames to put everything where it is at the new time, and the craft are let go.
+        /// </summary>
+        static IEnumerator SetTimeCmd(Call c)
+        {
+            Args a = c.Args;
+            if (!HighLogic.LoadedSceneHasPlanetarium || Planetarium.fetch == null) throw new ApiException("The game's clock cannot be set in this scene.");
+            double now = Planetarium.GetUniversalTime(), target;
+            CelestialBody body = HighLogic.LoadedScene == GameScenes.FLIGHT && FlightGlobals.ActiveVessel != null ? FlightGlobals.ActiveVessel.mainBody : FlightGlobals.GetHomeBody();
+            // (the sun is judged where the craft is, or else at the launch pad, wherever the game has its space centre)
+            if (!Places.Pad(out double lat, out double lon)) { lat = 0.0; lon = 0.0; }
+            if (HighLogic.LoadedScene == GameScenes.FLIGHT && FlightGlobals.ActiveVessel != null) { lat = FlightGlobals.ActiveVessel.latitude; lon = FlightGlobals.ActiveVessel.longitude; }
+            if (a.Has("ut")) target = a.Num("ut");
+            else if (a.Has("seconds")) target = now + a.Num("seconds");
+            else if (a.Has("hours")) target = now + a.Num("hours") * 3600.0;
+            else if (a.Has("sun")) target = SunAt(body, lat, lon, now, a.Num("sun"), a.Bool("rising", true));
+            else throw new ApiException("Give one of: ut, seconds, hours, sun (degrees above the horizon, with rising: true or false).");
+            if (double.IsNaN(target)) throw new ApiException("The sun never stands " + a.Num("sun") + " degrees up there.");
+            if (!(target > now + 0.5)) throw new ApiException("Only forward: the time asked for is not later than now (" + R(now, 0) + ").");
+            if (TimeWarp.fetch != null && TimeWarp.CurrentRateIndex > 0) { TimeWarp.fetch.CancelAutoWarp(); TimeWarp.SetRate(0, true, false); yield return new WaitSec(0.3f); }
+            var held = new List<Vessel>();
+            var onPad = new HashSet<Vessel>();
+            if (HighLogic.LoadedScene == GameScenes.FLIGHT)
+                foreach (Vessel v in FlightGlobals.VesselsLoaded)
+                    if (v != null && !v.packed) { if (v.situation == Vessel.Situations.PRELAUNCH) onPad.Add(v); v.GoOnRails(); held.Add(v); }
+            yield return null;
+            Planetarium.SetUniversalTime(target);
+            // (a few frames for the planets, the sun and the craft on rails to be put where they are at the new time)
+            yield return new WaitSec(0.4f);
+            foreach (Vessel v in held) if (v != null && v.loaded) v.GoOffRails();
+            yield return new WaitSec(0.5f);
+            // (a craft that stood ready on the pad stands ready still: off the rails the game calls it merely landed)
+            foreach (Vessel v in onPad) if (v != null && v.loaded && v.situation == Vessel.Situations.LANDED) v.situation = Vessel.Situations.PRELAUNCH;
+            double after = Planetarium.GetUniversalTime();
+            c.Result = new JObj().Add("ut", R(after, 1)).Add("was", R(now, 1)).Add("on_s", R(after - now, 1)).Add("held_on_rails", held.Count)
+                                 .Add("sun_deg", R(SunElevation(body, lat, lon, after, after), 1));
+        }
+
+        /// <summary>
+        /// How high the sun stands (degrees) at a place on a planet at a time not far from now: the place carried round the
+        /// planet's axis by its turn since now, in the direction its own east goes (so no handedness can be got backwards);
+        /// the sun's way taken as it is now (it moves a degree a day or less).
+        /// </summary>
+        static double SunElevation(CelestialBody body, double lat, double lon, double now, double ut)
+        {
+            CelestialBody sun = Planetarium.fetch.Sun;
+            if (body == null || sun == null || body == sun) return double.NaN;
+            Vector3d axis = body.GetSurfaceNVector(90.0, 0.0).normalized, up = body.GetSurfaceNVector(lat, lon).normalized;
+            Vector3d east = body.GetSurfaceNVector(lat, lon + 0.01) - up;
+            Vector3d along = axis * Vector3d.Dot(up, axis), round = up - along;
+            double r = round.magnitude;
+            if (r < 1e-6) return Math.Asin(Math.Max(-1.0, Math.Min(1.0, Vector3d.Dot(up, (sun.position - body.position).normalized)))) * 57.29578;
+            Vector3d p = round / r;
+            east = (east - axis * Vector3d.Dot(east, axis) - p * Vector3d.Dot(east, p)).normalized;
+            double turn = body.rotationPeriod > 0 ? 2.0 * Math.PI * (ut - now) / body.rotationPeriod : 0.0;
+            Vector3d upThen = along + r * (p * Math.Cos(turn) + east * Math.Sin(turn));
+            Vector3d toSun = (sun.position - body.position).normalized;
+            return Math.Asin(Math.Max(-1.0, Math.Min(1.0, Vector3d.Dot(upThen.normalized, toSun)))) * 57.29578;
+        }
+
+        /// <summary>The first time after now that the sun stands so high there, going up (or down).</summary>
+        static double SunAt(CelestialBody body, double lat, double lon, double now, double degrees, bool rising)
+        {
+            double day = body != null && body.rotationPeriod > 0 ? body.rotationPeriod : 21600.0;
+            double step = day / 720.0, t0 = now + 1.0, e0 = SunElevation(body, lat, lon, now, t0);
+            for (double t1 = t0 + step; t1 < now + day * 1.2; t1 += step)
+            {
+                double e1 = SunElevation(body, lat, lon, now, t1);
+                bool crossed = rising ? e0 < degrees && e1 >= degrees : e0 > degrees && e1 <= degrees;
+                if (crossed)
+                {
+                    double lo = t1 - step, hi = t1;
+                    for (int n = 0; n < 30; n++)
+                    {
+                        double mid = 0.5 * (lo + hi), em = SunElevation(body, lat, lon, now, mid);
+                        if (rising ? em < degrees : em > degrees) lo = mid; else hi = mid;
+                    }
+                    return hi;
+                }
+                t0 = t1; e0 = e1;
+            }
+            return double.NaN;
+        }
+
         static IEnumerator WarpCmd(Call c)
         {
             Args a = c.Args;
@@ -623,7 +712,7 @@ namespace AIBridge.Api
                         if (!a.Has("lead_s")) lead = 60;
                         break;
                     case "soi": case "soi_change":
-                        if (orbit.patchEndTransition == Orbit.PatchTransitionType.FINAL) throw new ApiException("This trajectory never leaves " + orbit.referenceBody.bodyName + "'s sphere of influence.");
+                        if (orbit.patchEndTransition == Orbit.PatchTransitionType.FINAL) throw new ApiException("This trajectory never leaves " + Places.Name(orbit.referenceBody) + "'s sphere of influence.");
                         target = orbit.EndUT + 5;
                         break;
                     default: throw new ApiException("Give one of: to (apoapsis|periapsis|node|soi), seconds, ut, or rate (0-7).");
@@ -713,13 +802,14 @@ namespace AIBridge.Api
         {
             if (FlightGlobals.Bodies == null) throw new ApiException("No game is loaded.");
             string only = a.Str("name");
+            CelestialBody wanted = string.IsNullOrEmpty(only) ? null : Places.Body(only);
             var list = new List<object>();
             foreach (CelestialBody b in FlightGlobals.Bodies)
             {
-                if (!string.IsNullOrEmpty(only) && !b.bodyName.Equals(only, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.IsNullOrEmpty(only) && b != wanted) continue;
                 var o = new JObj();
-                o.Add("name", b.bodyName);
-                if (b.orbit != null && b.referenceBody != null && b.referenceBody != b) o.Add("orbits", b.referenceBody.bodyName);
+                o.Add("name", Places.Name(b));
+                if (b.orbit != null && b.referenceBody != null && b.referenceBody != b) o.Add("orbits", Places.Name(b.referenceBody));
                 o.Add("radius_m", R(b.Radius, 0));
                 o.Add("surface_gravity", R(b.GeeASL * 9.80665, 2));
                 o.Add("mu", b.gravParameter);
@@ -735,7 +825,7 @@ namespace AIBridge.Api
                 if (!string.IsNullOrEmpty(only))
                 {
                     var moons = new List<object>();
-                    foreach (CelestialBody m in b.orbitingBodies) moons.Add(m.bodyName);
+                    foreach (CelestialBody m in b.orbitingBodies) moons.Add(Places.Name(m));
                     if (moons.Count > 0) o.Add("satellites", moons);
                     o.Add("has_surface", b.hasSolidSurface);
                     o.Add("ocean", b.ocean);
@@ -766,7 +856,7 @@ namespace AIBridge.Api
                 o.Add("id", v.persistentId);
                 o.Add("type", v.vesselType.ToString().ToLowerInvariant());
                 o.Add("situation", v.situation.ToString());
-                o.Add("body", v.mainBody.bodyName);
+                o.Add("body", Places.Name(v.mainBody));
                 if (v == active) o.Add("active", true);
                 if (v.LandedOrSplashed) { o.Add("lat", R(v.latitude, 3)); o.Add("lon", R(v.longitude, 3)); }
                 else if (v.orbit != null)
@@ -807,10 +897,10 @@ namespace AIBridge.Api
                 FlightGlobals.fetch.SetVesselTarget(null, true);
                 return new JObj().Add("target", null);
             }
-            CelestialBody body = FlightGlobals.Bodies.Find(b => b.bodyName.Equals(name, StringComparison.OrdinalIgnoreCase));
+            CelestialBody body = Places.Body(name);
             if (body != null)
             {
-                if (body == v.mainBody) throw new ApiException("You are already orbiting " + body.bodyName + "; it cannot be the target.");
+                if (body == v.mainBody) throw new ApiException("You are already orbiting " + Places.Name(body) + "; it cannot be the target.");
                 FlightGlobals.fetch.SetVesselTarget(body, true);
             }
             else

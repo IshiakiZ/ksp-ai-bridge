@@ -48,7 +48,7 @@ namespace AIBridge.Api
             o.Add("on_eva", true);
             o.Add("kerbal", v.GetDisplayName());
             o.Add("doing", ctl.State);
-            o.Add("body", v.mainBody.bodyName);
+            o.Add("body", Places.Name(v.mainBody));
             o.Add("situation", v.situation.ToString());
             o.Add("lat", Math.Round(v.latitude, 6)).Add("lon", Math.Round(v.longitude, 6));
             if (v.LandedOrSplashed || v.radarAltitude < 5000) o.Add("facing", Math.Round(Facing(v, eva)));
@@ -369,7 +369,7 @@ namespace AIBridge.Api
             {
                 Vessel other = NavApi.FindVessel(a.Str("target"));
                 if (other == null) throw new ApiException("No vessel named '" + a.Str("target") + "'.");
-                if (other.mainBody != v.mainBody) throw new ApiException("'" + other.GetDisplayName() + "' is not on " + v.mainBody.bodyName + ".");
+                if (other.mainBody != v.mainBody) throw new ApiException("'" + other.GetDisplayName() + "' is not on " + Places.Name(v.mainBody) + ".");
                 return new SurfaceApi.Spot { Lat = other.latitude, Lon = SurfaceApi.NormLon(other.longitude), Label = other.GetDisplayName() };
             }
             return SurfaceApi.Resolve(a, v);

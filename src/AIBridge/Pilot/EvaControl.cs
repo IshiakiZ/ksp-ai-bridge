@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using AIBridge.Api;
 using UnityEngine;
 
 namespace AIBridge.Pilot
@@ -240,7 +241,7 @@ namespace AIBridge.Pilot
             double power = Eva.linPower / Math.Max(0.01, v.totalMass);
             Vector3d up = Guidance.Up(v);
             double gravity = surface ? Guidance.LocalGravity(v) : 0;
-            if (surface && power < gravity * 1.15) { Fail("the jetpack cannot lift a kerbal in " + v.mainBody.bodyName + "'s gravity; use a ladder"); return false; }
+            if (surface && power < gravity * 1.15) { Fail("the jetpack cannot lift a kerbal in " + Places.Name(v.mainBody) + "'s gravity; use a ladder"); return false; }
 
             Phase = Math.Round(distance, 1) + " m from " + Label + " at " + Math.Round(velocity.magnitude, 2) + " m/s";
             Part reach = ctl.HatchInReach;
