@@ -8,6 +8,8 @@ own computer). A second download, the **voice edition**, adds a ship's computer 
 
 ![A craft built by the AI in the VAB](docs/img/mun-lander-vab.jpg)
 
+![Claude building a rocket in the VAB, part by part](docs/img/ai-bridge-builds.gif)
+
 ## Install
 
 Needs KSP 1.12.x and Python 3.8 or later. From the download:

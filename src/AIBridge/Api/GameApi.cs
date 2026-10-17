@@ -266,8 +266,18 @@ namespace AIBridge.Api
                 return new JObj().Add("fps", Math.Round(1f / Mathf.Max(1e-4f, Time.smoothDeltaTime), 1)).Add("frame_ms", Math.Round(Time.unscaledDeltaTime * 1000f, 1))
                     .Add("particles", particles).Add("particle_systems", systems).Add("time_scale", Time.timeScale).Add("lights", UnityEngine.Object.FindObjectsOfType<Light>().Length);
             });
-            Rpc.Sync("dev_frames", "Development build only: how many frames the game has drawn and its clock, for working out a frame rate exactly between two calls. params: {uncap: bool (true: let the game draw as fast as it can, for measuring what something costs; false: as it was. Not kept: it is back as it was at the next start)}", a =>
+            Rpc.Sync("dev_frames", "Development build only: how many frames the game has drawn and its clock, for working out a frame rate exactly between two calls. params: {uncap: bool (true: let the game draw as fast as it can, for measuring what something costs; false: as it was. Not kept: it is back as it was at the next start), cap: frames a second to hold the game to (as a busy game runs: every frame long; 0 or less: as it was)}", a =>
             {
+                if (a.Has("cap"))
+                {
+                    int cap = a.Int("cap", 0);
+                    if (cap > 0)
+                    {
+                        if (devVsync < 0) { devVsync = QualitySettings.vSyncCount; devTarget = Application.targetFrameRate; }
+                        QualitySettings.vSyncCount = 0; Application.targetFrameRate = cap;
+                    }
+                    else if (devVsync >= 0) { QualitySettings.vSyncCount = devVsync; Application.targetFrameRate = devTarget; devVsync = -1; }
+                }
                 if (a.Has("uncap"))
                 {
                     if (a.Bool("uncap", false))
