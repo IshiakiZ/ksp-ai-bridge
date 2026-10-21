@@ -19,7 +19,7 @@ python3 install.py
 ```
 
 Then start KSP, open a new Claude session in this folder, approve the `ksp` server and ask for something.
-[Installing in full](docs/Installing.md).
+[Installing in full](https://github.com/IshiakiZ/ksp-ai-bridge/wiki/Installing).
 
 ## Things to ask
 
@@ -39,17 +39,18 @@ Then start KSP, open a new Claude session in this folder, approve the `ksp` serv
 ## Good to know
 
 * Flown with no human input: a Mun landing and return, landings within tens of metres of chosen coordinates on the
-  Mun and Duna, docking, aircraft, rovers and an EVA. [The whole list](docs/What-has-been-flown.md) and
-  [the limits](docs/Limits.md).
+  Mun and Duna, a rendezvous and docking, aircraft (a spaceplane brought home from 11 km up), rovers and an EVA. [The whole list](https://github.com/IshiakiZ/ksp-ai-bridge/wiki/What-has-been-flown) and
+  [the limits](https://github.com/IshiakiZ/ksp-ai-bridge/wiki/Limits).
 
 ## Works on
 
 Mac: made and flown here. Windows 11: the plugin, the server, flights to orbit and back, and the voice edition's
-models were tried; what 0.7.0 and 0.8.0 added (never silent; the clock set without a warp) on the Mac only so far.
+models were tried; what 0.7.0 to 0.9.0 added (never silent; the clock set without a warp; docking from a rendezvous it
+plans, a spaceplane brought down from high up, landings planned on the site's own air) on the Mac only so far.
 Linux: never run.
 
-**More:** [the long description](docs/The-long-description.md) (everything in full) and the rest of the
-[wiki](docs/README.md): the tools and autopilots, the voice edition, a model on your own computer.
+**More:** [the long description](https://github.com/IshiakiZ/ksp-ai-bridge/wiki/The-long-description) (everything in full) and the rest of the
+[wiki](https://github.com/IshiakiZ/ksp-ai-bridge/wiki): the tools and autopilots, the voice edition, a model on your own computer.
 
 ## Licence
 
@@ -59,4 +60,4 @@ Linux: never run.
 
 `./build.sh check` compiles, `./build.sh dev` makes a hot-reload build that a running KSP swaps in within a
 second, `./build.sh release` installs the normal one and `./package.sh` makes the two downloads.
-[More](docs/Developing.md).
+[More](https://github.com/IshiakiZ/ksp-ai-bridge/wiki/Developing).

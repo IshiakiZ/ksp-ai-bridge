@@ -14,7 +14,7 @@ namespace AIBridge
     /// </summary>
     public sealed class BridgeHost : MonoBehaviour
     {
-        public const string Version = "0.8.0";
+        public const string Version = "0.9.0";
         public const int DefaultPort = 5770;
 
         public static BridgeHost Instance { get; private set; }

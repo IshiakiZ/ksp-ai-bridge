@@ -547,11 +547,12 @@ namespace AIBridge.Api
         /// <summary>One of a few named things, given as its number or as its name (as the settings file has it).</summary>
         static int DevChoice(object setting, string text)
         {
-            if (int.TryParse(text, out int n)) return n;
+            // (an option's own name first: a choice of frame rates has options named "24" and "25", which are not their places in it)
             string[] options = setting.GetType().GetField("Options")?.GetValue(setting) as string[];
             int at = options != null ? Array.IndexOf(options, text) : -1;
-            if (at < 0) throw new ApiException("'" + text + "' is not one of: " + (options != null ? string.Join(", ", options) : "a number"));
-            return at;
+            if (at >= 0) return at;
+            if (int.TryParse(text, out int n)) return n;
+            throw new ApiException("'" + text + "' is not one of: " + (options != null ? string.Join(", ", options) : "a number"));
         }
 
         static Color DevColour(string text)

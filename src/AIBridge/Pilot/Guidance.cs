@@ -126,6 +126,25 @@ namespace AIBridge.Pilot
             isp = flow > 0 ? maxThrust / (flow * G0) : 0;
         }
 
+        /// <summary>
+        /// The engines' greatest thrust, counted as EngineStats counts it, at another air pressure (atmospheres): what they will
+        /// give lower down. An engine's thrust goes with its Isp at the pressure it works in; one made for a vacuum gives a quarter
+        /// of its thrust at Kerbin's sea level (the Terrier: 14.8 kN of 60).
+        /// </summary>
+        public static double ThrustAt(Vessel v, double pressureAtm)
+        {
+            double sum = 0;
+            foreach (Part p in v.parts)
+                foreach (PartModule m in p.Modules)
+                {
+                    if (!(m is ModuleEngines e) || !e.EngineIgnited || !e.isEnabled || e.flameout) continue;
+                    double ispThere = e.atmosphereCurve.Evaluate((float)pressureAtm), ispVac = e.atmosphereCurve.Evaluate(0f);
+                    if (ispThere <= 0 || ispVac <= 0) continue;
+                    sum += e.maxThrust * (e.thrustPercentage / 100.0) * (ispThere / ispVac);
+                }
+            return sum;
+        }
+
         /// <summary>Seconds of full-throttle burn needed for a velocity change, from the rocket equation.</summary>
         public static double BurnTime(Vessel v, double deltaV)
         {

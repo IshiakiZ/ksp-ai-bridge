@@ -87,6 +87,7 @@ namespace AIBridge.Pilot
 
             Guidance.EngineStats(v, out double maxThrust, out double _, out double _, out int burning, out int _);
             double thrustAccel = maxThrust / Math.Max(1e-6, v.totalMass);
+            double planAccel = PlanAccel(v, thrustAccel);
             if (HasTarget) Locate(v, up);
 
             if (v.LandedOrSplashed && state != State.Settled)
@@ -116,7 +117,8 @@ namespace AIBridge.Pilot
                     double r0 = (v.CoMD - body.position).magnitude;
                     double orbital = Vector3d.Exclude(up, v.obt_velocity).magnitude;
                     double holding = Math.Max(0, gravity - orbital * orbital / r0);
-                    double usable = Math.Sqrt(Math.Max(0.01, Math.Pow(thrustAccel * 0.95, 2) - holding * holding));
+                    if (burning > 0 && TooWeak(v, planAccel, 1.02)) return;
+                    double usable = Math.Sqrt(Math.Max(0.01, Math.Pow(planAccel * 0.95, 2) - holding * holding));
                     double along = Vector3d.Dot(horizontalVelocity, toTarget);
                     double needed = along > 0 ? along * along / (2.0 * 0.8 * usable) : 0;
                     bool tooLow = false;
@@ -124,7 +126,7 @@ namespace AIBridge.Pilot
                     {
                         // Arriving on a slant: the burn goes against the direction of travel, so step it
                         // through to see how far it carries and how much height it uses up.
-                        StopPoint(along, descentRate, 0.8 * 0.95 * thrustAccel, holding, out needed, out double drop);
+                        StopPoint(along, descentRate, 0.8 * 0.95 * planAccel, holding, out needed, out double drop);
                         tooLow = descentRate > 0 && Math.Min(height, v.altitude - targetAltitude) - drop < 900;
                     }
                     double spare = distance - needed;
@@ -171,10 +173,10 @@ namespace AIBridge.Pilot
                     {
                         if (ThinAir && v.srfSpeed > 60.0)
                         {
-                            BrakeThroughAir(ap, v, up, horizontalVelocity, thrustAccel, gravity, height, descentRate);
+                            BrakeThroughAir(ap, v, up, horizontalVelocity, thrustAccel, planAccel, gravity, height, descentRate);
                             break;
                         }
-                        if (BrakeToTarget(ap, v, up, horizontalVelocity, thrustAccel, gravity, height, descentRate)) break;
+                        if (BrakeToTarget(ap, v, up, horizontalVelocity, thrustAccel, planAccel, gravity, height, descentRate)) break;
                         return;
                     }
                     if (horizontalSpeed < 2.0)
@@ -183,11 +185,7 @@ namespace AIBridge.Pilot
                         state = State.Drop;
                         break;
                     }
-                    if (thrustAccel < gravity * 1.15)
-                    {
-                        Fail("thrust is too weak to land here: " + Math.Round(thrustAccel, 2) + " m/s² against gravity of " + Math.Round(gravity, 2) + " m/s²");
-                        return;
-                    }
+                    if (TooWeak(v, planAccel, 1.15)) return;
                     Phase = "braking, " + Math.Round(horizontalSpeed) + " m/s sideways, " + Math.Round(height) + " m up";
                     // Tilt the thrust upward just enough that the vessel neither climbs nor sinks while it slows.
                     double r = (v.CoMD - body.position).magnitude;
@@ -215,7 +213,8 @@ namespace AIBridge.Pilot
                     ap.SetThrottle(0);
                     ap.FixedDirection = SteerUpright(up, horizontalVelocity, descentRate, v, Vector3d.zero);
                     ap.SetAttitude(AttitudeMode.Fixed);
-                    double net = Math.Max(0.1, thrustAccel - gravity);
+                    if (TooWeak(v, planAccel, 1.02)) return;
+                    double net = Math.Max(0.1, planAccel - gravity);
                     double stopping = descentRate > 0 ? descentRate * descentRate / (2.0 * net) : 0.0;
                     double trigger = stopping / 0.7 * SafetyFactor + descentRate * 1.0 + 20.0;
                     if (InAtmosphere && descentRate > 0)
@@ -244,7 +243,7 @@ namespace AIBridge.Pilot
                     Vector3d drift = HasTarget && height > 12 && distance > 2 && distance < 2000 ? toTarget * Math.Min(8.0, 0.12 * distance) : Vector3d.zero;
                     ap.FixedDirection = SteerUpright(up, horizontalVelocity, descentRate, v, drift);
                     ap.SetAttitude(AttitudeMode.Fixed);
-                    double net = Math.Max(0.1, thrustAccel - gravity);
+                    double net = Math.Max(0.1, planAccel - gravity);
                     // Follow a braking curve: at each height, the fastest descent that 70% of the available
                     // deceleration can still stop a few metres above the ground. Riding the curve needs that
                     // deceleration continuously (the feed-forward term); the last term corrects any error.
@@ -294,6 +293,39 @@ namespace AIBridge.Pilot
             startDv = dv != null && dv.IsReady ? dv.TotalDeltaVActual : double.NaN;
         }
 
+        /// <summary>
+        /// (2026-10-18) The engines' push for each tonne at the bottom of the descent, where the air is thickest, and never more than
+        /// now: what the braking is planned on (the throttle is still set on what they give now). Planned on what the engine gave
+        /// high up, the stock Kerbal X's upper stage, its Terrier giving a quarter of its thrust at sea level, meant to stop 2.5 km up
+        /// and hit the ground at 384 m/s (2026-10-10).
+        /// </summary>
+        double PlanAccel(Vessel v, double thrustAccel)
+        {
+            CelestialBody body = v.mainBody;
+            if (body == null || !body.atmosphere || thrustAccel <= 0) return thrustAccel;
+            double ground = HasTarget && targetAltitude > 0 ? targetAltitude : Math.Max(0, v.terrainAltitude);
+            double atm = FlightGlobals.getStaticPressure(ground, body) * PhysicsGlobals.KpaToAtmospheres;
+            return Math.Min(thrustAccel, Guidance.ThrustAt(v, atm) / Math.Max(1e-6, v.totalMass));
+        }
+
+        /// <summary>
+        /// Whether the engines cannot hold the vessel up where it is to land, with a margin (1.15 as the braking always asked; 1.02,
+        /// just able to hover there, before it, while falling or coasting), and if so the program ends, saying so and what to do
+        /// instead, before the braking begins rather than at the bottom.
+        /// </summary>
+        bool TooWeak(Vessel v, double planAccel, double margin)
+        {
+            CelestialBody body = v.mainBody;
+            double ground = HasTarget && targetAltitude > 0 ? targetAltitude : Math.Max(0, v.terrainAltitude);
+            double g = body.gravParameter / Math.Pow(body.Radius + ground, 2);
+            if (planAccel >= g * margin) return false;
+            double vacuum = Guidance.ThrustAt(v, 0), there = planAccel * v.totalMass;
+            Fail("thrust is too weak to land here: the engines give " + Math.Round(there, 1) + " kN where the vessel would land" +
+                 (body.atmosphere && vacuum > there * 1.05 ? " (" + Math.Round(vacuum, 1) + " kN in a vacuum: the air there takes the rest)" : "") +
+                 ", " + Math.Round(planAccel, 2) + " m/s² against gravity of " + Math.Round(g, 2) + " m/s²; come down under parachutes (land with stage: true), or land where the air is thinner");
+            return true;
+        }
+
         static string RemainingDv(Vessel v)
         {
             VesselDeltaV dv = v.VesselDeltaV;
@@ -305,15 +337,11 @@ namespace AIBridge.Pilot
         /// target, and push sideways against whatever is carrying the vessel off the line to it.
         /// Returns false when the program has ended.
         /// </summary>
-        bool BrakeToTarget(Autopilot ap, Vessel v, Vector3d up, Vector3d horizontalVelocity, double thrustAccel, double gravity, double height, double descentRate)
+        bool BrakeToTarget(Autopilot ap, Vessel v, Vector3d up, Vector3d horizontalVelocity, double thrustAccel, double planAccel, double gravity, double height, double descentRate)
         {
             CelestialBody body = v.mainBody;
             double horizontalSpeed = horizontalVelocity.magnitude;
-            if (thrustAccel < gravity * 1.15)
-            {
-                Fail("thrust is too weak to land here: " + Math.Round(thrustAccel, 2) + " m/s² against gravity of " + Math.Round(gravity, 2) + " m/s²");
-                return false;
-            }
+            if (TooWeak(v, planAccel, 1.15)) return false;
             if (distance < 25 && horizontalSpeed < 1.5)
             {
                 ap.SetThrottle(0);
@@ -328,8 +356,8 @@ namespace AIBridge.Pilot
             double weight = gravity - orbital * orbital / r;
             double along = Vector3d.Dot(horizontalVelocity, toTarget);
             double wantedSink = height > 3000 ? Math.Min(40.0, (height - 3000) / 120.0) : 0.0;
-            double upAccel = OrbitMath.Clamp(weight + 0.4 * (descentRate - wantedSink), -0.2 * thrustAccel, 0.85 * thrustAccel);
-            double usable = Math.Sqrt(Math.Max(0.01, Math.Pow(thrustAccel * 0.97, 2) - upAccel * upAccel));
+            double upAccel = OrbitMath.Clamp(weight + 0.4 * (descentRate - wantedSink), -0.2 * planAccel, 0.85 * planAccel);
+            double usable = Math.Sqrt(Math.Max(0.01, Math.Pow(planAccel * 0.97, 2) - upAccel * upAccel));
 
             Vector3d across = horizontalVelocity - toTarget * along;
             // Speed still allowed at this distance if 80% of the sideways thrust is to stop the vessel there.
@@ -391,7 +419,7 @@ namespace AIBridge.Pilot
         /// lost together), leaning only a little to stay on the line to the spot; the throttle is set so
         /// that the burn ends over it. Below 60 m/s the ordinary routine takes over.
         /// </summary>
-        void BrakeThroughAir(Autopilot ap, Vessel v, Vector3d up, Vector3d horizontalVelocity, double thrustAccel, double gravity, double height, double descentRate)
+        void BrakeThroughAir(Autopilot ap, Vessel v, Vector3d up, Vector3d horizontalVelocity, double thrustAccel, double planAccel, double gravity, double height, double descentRate)
         {
             CelestialBody body = v.mainBody;
             double r = (v.CoMD - body.position).magnitude;
@@ -406,12 +434,12 @@ namespace AIBridge.Pilot
             Vector3d airRetrograde = -(v.srf_velocity - Api.WeatherApi.WindOn(v)).normalized;
 
             // Too close to the ground to think about the spot any more: stop the fall.
-            StopPoint(horizontalSpeed, descentRate, 0.95 * thrustAccel, weight, out double _, out double leastDrop);
+            StopPoint(horizontalSpeed, descentRate, 0.95 * planAccel, weight, out double _, out double leastDrop);
             if (descentRate > 0 && height - leastDrop < 150) { state = State.FinalDescent; return; }
 
             // How hard to brake so that the burn ends over the spot: compare where a burn at 80% would end
             // with how far the spot is. Ending too low for comfort overrides that.
-            StopPoint(Math.Max(1, along), descentRate, 0.8 * 0.95 * thrustAccel, weight, out double reach, out double drop);
+            StopPoint(Math.Max(1, along), descentRate, 0.8 * 0.95 * planAccel, weight, out double reach, out double drop);
             double share = along > 1 ? 0.8 * reach / Math.Max(1.0, distance - 15) : 1.0;
             if (descentRate > 0 && Math.Min(height, v.altitude - targetAltitude) - drop < 600) share = 1.0;
             share = OrbitMath.Clamp(share, 0.2, 1.0);

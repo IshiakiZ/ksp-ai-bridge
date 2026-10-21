@@ -452,15 +452,32 @@ def desc(schema, description):
 @tool("ksp_status",
       """Start here. Reports whether KSP is running and where the game is: scene (main_menu, space_center, vab,
       sph, flight, tracking_station), current save, game time, the active vessel or the craft in the editor,
-      and any popup dialog that is blocking the screen.""",
-      read_only=True, title="KSP status")
+      and any popup dialog that is blocking the screen. all=true also gives, in the same reply, the flown
+      vessel's telemetry (as ksp_vessel) and the whole weather report (as ksp_weather): everything at once.""",
+      {"all": BOOL}, read_only=True, title="KSP status")
 def t_status(a):
     if not game_running():
         d = ksp_dir()
         if not d:
             raise BridgeError("Kerbal Space Program was not found. Set KSP_DIR for this MCP server.")
         return text({"ksp_running": False, "ksp_dir": d, "next": "Call ksp_start_game to launch KSP (takes one to two minutes)."})
-    return text(note_events(rpc("status")))
+    status = note_events(rpc("status"))
+    if not a.get("all"):
+        return text(status)
+    # (everything at once: the craft's telemetry in flight, the weather in flight and at the space centre)
+    out = {"status": status}
+    scene = status.get("scene") if isinstance(status, dict) else None
+    if scene == "flight":
+        try:
+            out["vessel"] = rpc("vessel", {})
+        except BridgeError as problem:
+            out["vessel"] = {"error": str(problem)}
+    if scene in ("flight", "space_center"):
+        try:
+            out["weather"] = rpc("weather", {})
+        except BridgeError as problem:
+            out["weather"] = {"error": str(problem)}
+    return text(out)
 
 
 def launch_command(d):
@@ -1032,12 +1049,15 @@ def t_ascent(a):
       opposite apsis); transfer (to the current target: a moon of the body you orbit such as the Mun,
       another vessel in the same orbit system, or another planet when you are in a parking orbit; waits
       for the right departure time and tunes the burn for an encounter with periapsis_km at the target);
+      rendezvous (with a target craft on nearly the same orbit, a few km away: a phasing burn so that
+      it is met after one to eight orbits; the result's meet_in_s says when: plan
+      match_velocity with in_seconds then; transfer would wait days for the phase to come round);
       correct (a small mid-course burn that restores periapsis_km at the target body, or at 'body' such
       as Kerbin on the way home; use it after any long transfer burn); return (from a moon's orbit back
       to its planet with periapsis_km there, default a reentry altitude); match_planes (with the target,
       at the next crossing); match_velocity (with the target at closest approach). Replaces existing
       nodes. Then fly it with ksp_execute_node.""",
-      {"maneuver": enum("circularize", "set_apoapsis", "set_periapsis", "transfer", "correct", "return", "match_planes", "match_velocity"),
+      {"maneuver": enum("circularize", "set_apoapsis", "set_periapsis", "transfer", "rendezvous", "correct", "return", "match_planes", "match_velocity"),
        "at": desc(STR, "apoapsis or periapsis (circularize, set_*), or 'highest' for match_planes."),
        "altitude_km": NUM, "periapsis_km": NUM, "in_seconds": NUM, "body": desc(STR, "For correct: the body to arrive at, if it is not the target.")},
       ["maneuver"], title="Plan maneuver")
@@ -1170,8 +1190,9 @@ def t_fly(a):
       """Docking. action=ports lists the docking ports of this vessel and of the target with their sizes and
       states. action=dock flies the docking with RCS: it turns this vessel's port to face the target's,
       flies round to a point straight out from the target port, then closes at a crawl until the ports
-      latch; the two vessels become one. Rendezvous first (ksp_plan transfer, then match_velocity at closest
-      approach) so that the target is within about 2 km, ideally 200 m, and nearly at rest relative to you.
+      latch; the two vessels become one. Rendezvous first (ksp_plan transfer, or rendezvous for a craft a few
+      km away on nearly your orbit, then match_velocity at closest approach) so that the target is within about
+      2 km, ideally 200 m, and nearly at rest relative to you.
       Needs RCS thrusters, monopropellant and a free port of the same size on each vessel. A target that is
       turning slowly is followed round (up to about 12 degrees a second; steadier is cheaper), and roll is
       matched then, or whenever you give roll (degrees between the two ports' "up" marks). Returns at
@@ -1511,7 +1532,8 @@ Flying
   The hold keeps flying between commands; change it with ksp_fly cruise.
 - Rovers: ksp_drive to a spot; it goes round obstacles by itself.
 - Docking: get within a couple of hundred metres at low relative speed (ksp_plan transfer to the target
-  vessel, ksp_plan match_velocity, execute), then ksp_dock dock. ksp_dock undock to separate.
+  vessel, or ksp_plan rendezvous when it is a few km away on nearly your orbit; then ksp_plan match_velocity
+  at the meeting, execute), then ksp_dock dock. ksp_dock undock to separate.
 - EVA: ksp_eva start, then let_go / walk / fly / flag / board; science with ksp_science run.
 - In space, deploy solar panels and antennas with ksp_part_action part="all" do="Extend".
 - Electric charge running out makes probes uncontrollable; watch resources.

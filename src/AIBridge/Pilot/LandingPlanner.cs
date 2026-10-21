@@ -20,7 +20,7 @@ namespace AIBridge.Pilot
         /// <summary>Where a point fixed to the ground will be (as a direction from the body's centre, in today's axes) after the body has turned for a while.</summary>
         public static Vector3d GroundDirectionAfter(CelestialBody body, Vector3d direction, double seconds)
         {
-            if (!body.rotates || body.rotationPeriod <= 0 || seconds == 0) return direction;
+            if (!body.rotates || body.rotationPeriod == 0 || seconds == 0) return direction;
             Vector3d axis = ((Vector3d)body.angularVelocity).normalized;
             if (axis.sqrMagnitude < 0.5) return direction;
             Vector3d along = axis * Vector3d.Dot(direction, axis);
@@ -31,7 +31,9 @@ namespace AIBridge.Pilot
             Vector3d forward = body.getRFrmVel(body.position + direction * body.Radius);
             if (forward.sqrMagnitude < 1e-12) return direction;
             forward = Vector3d.Exclude(axis, forward).normalized;
-            double angle = 2.0 * Math.PI * seconds / body.rotationPeriod;
+            // (by the size of the turn: "forward" is the ground's own way already, backward on a world that turns backward, as Real
+            // Worlds' Venus and Pluto do; until 2026-10-20 such a world's ground was not turned at all)
+            double angle = 2.0 * Math.PI * seconds / Math.Abs(body.rotationPeriod);
             return along + (across.normalized * Math.Cos(angle) + forward * Math.Sin(angle)) * size;
         }
 

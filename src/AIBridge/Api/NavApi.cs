@@ -26,7 +26,7 @@ namespace AIBridge.Api
 
             Rpc.Async("wait", "Block until something happens. params: {timeout_s, until: {...}, stop_on_event}", Wait).AlwaysAllowed = true;
             Rpc.Async("warp", "Time warp. params: {to: apoapsis|periapsis|node|soi, seconds, ut, lead_s, rate, timeout_s}", WarpCmd);
-            Rpc.Async("set_time", "Set the game's clock straight to a later time, without a warp: craft are held on rails for the moment it takes, as a warp holds them (landed ones stay where they stand, orbiting ones go on along their orbits). Forward only. params: {ut, seconds or hours (on from now), sun: degrees above the horizon at the craft (at the space centre outside flight), rising: true (morning, as given) or false (evening)}", SetTimeCmd);
+            Rpc.Async("set_time", "Set the game's clock straight to a later time, without a warp: craft are held on rails for the moment it takes, as a warp holds them (landed ones stay where they stand, orbiting ones go on along their orbits). Forward only. params: {ut, seconds or hours (on from now), sun: degrees above the horizon at the craft (at the space centre outside flight), rising: true (morning, as given) or false (evening)}. On a world whose day is long (Venus's 117 days) the sun reached is a few degrees off the one asked for; the result's sun_deg says where it stands.", SetTimeCmd);
 
             Rpc.Sync("bodies", "Planets and moons with the numbers needed for planning. params: {name}", Bodies).AlwaysAllowed = true;
             Rpc.Sync("vessels", "All vessels in the save. params: {include_debris}", Vessels).AlwaysAllowed = true;
@@ -615,14 +615,30 @@ namespace AIBridge.Api
             if (TimeWarp.fetch != null && TimeWarp.CurrentRateIndex > 0) { TimeWarp.fetch.CancelAutoWarp(); TimeWarp.SetRate(0, true, false); yield return new WaitSec(0.3f); }
             var held = new List<Vessel>();
             var onPad = new HashSet<Vessel>();
+            bool warped = false;
             if (HighLogic.LoadedScene == GameScenes.FLIGHT)
+            {
                 foreach (Vessel v in FlightGlobals.VesselsLoaded)
-                    if (v != null && !v.packed) { if (v.situation == Vessel.Situations.PRELAUNCH) onPad.Add(v); v.GoOnRails(); held.Add(v); }
+                    if (v != null && !v.packed) { if (v.situation == Vessel.Situations.PRELAUNCH) onPad.Add(v); held.Add(v); }
+                // (The craft held on rails by the game itself, as its warp holds them: the lowest step of its warp, for the moment
+                // of the jump. Put on rails by hand, as until 2026-10-18, a craft within the game's range was taken off them again
+                // at the next frame (22 ms later in the log), and the clock moved on under a craft still flying by its physics, which
+                // stayed where it was in space while the planet turned under it.)
+                if (held.Count > 0 && TimeWarp.fetch != null)
+                {
+                    TimeWarp.fetch.Mode = TimeWarp.Modes.HIGH;
+                    TimeWarp.SetRate(1, true, false);
+                    yield return new WaitSec(0.3f);
+                    warped = TimeWarp.CurrentRateIndex >= 1;
+                    if (!warped)
+                        throw new ApiException("The game will not hold the craft on rails here (in the air, or under thrust), so its clock cannot be set: land, splash down or be in space first.");
+                }
+            }
             yield return null;
             Planetarium.SetUniversalTime(target);
             // (a few frames for the planets, the sun and the craft on rails to be put where they are at the new time)
             yield return new WaitSec(0.4f);
-            foreach (Vessel v in held) if (v != null && v.loaded) v.GoOffRails();
+            if (warped) TimeWarp.SetRate(0, true, false);
             yield return new WaitSec(0.5f);
             // (a craft that stood ready on the pad stands ready still: off the rails the game calls it merely landed)
             foreach (Vessel v in onPad) if (v != null && v.loaded && v.situation == Vessel.Situations.LANDED) v.situation = Vessel.Situations.PRELAUNCH;
@@ -632,9 +648,29 @@ namespace AIBridge.Api
         }
 
         /// <summary>
+        /// How fast the sun goes round the sky at a place on a world, in radians a second, as the hour hand goes round: the world's
+        /// turn on its axis (backward where its period is negative, as Real Worlds' Venus, Uranus and Pluto turn) less the sun's
+        /// own way round the sky as the world (or the planet a moon goes round) goes round the sun. (Since 2026-10-20: the sun was
+        /// held where it stood and the world turned forward only, once: on Venus, turning backward once in 243 days with a solar
+        /// day of 117, "the sun never stands 30 degrees up there".)
+        /// </summary>
+        static double SunRate(CelestialBody body)
+        {
+            CelestialBody sun = Planetarium.fetch != null ? Planetarium.fetch.Sun : null;
+            if (body == null) return 0.0;
+            double spin = body.rotates && body.rotationPeriod != 0 ? 2.0 * Math.PI / body.rotationPeriod : 0.0;
+            CelestialBody planet = body;
+            while (planet.referenceBody != null && planet.referenceBody != sun && planet.referenceBody != planet) planet = planet.referenceBody;
+            double year = planet != sun && planet.orbit != null ? planet.orbit.period : 0.0;
+            double sense = planet.orbit != null && Math.Cos(planet.orbit.inclination * Math.PI / 180.0) < 0 ? -1.0 : 1.0;
+            return spin - (year > 0 ? sense * 2.0 * Math.PI / year : 0.0);
+        }
+
+        /// <summary>
         /// How high the sun stands (degrees) at a place on a planet at a time not far from now: the place carried round the
-        /// planet's axis by its turn since now, in the direction its own east goes (so no handedness can be got backwards);
-        /// the sun's way taken as it is now (it moves a degree a day or less).
+        /// planet's axis, in the direction its own east goes (so no handedness can be got backwards), by the sun's turn round its
+        /// sky since now (SunRate: the world's turn less the sun's own way round it); the sun's height above the world's equator
+        /// taken as it is now (it changes by a degree a day or less, a little more on a slow world over its long day).
         /// </summary>
         static double SunElevation(CelestialBody body, double lat, double lon, double now, double ut)
         {
@@ -647,7 +683,7 @@ namespace AIBridge.Api
             if (r < 1e-6) return Math.Asin(Math.Max(-1.0, Math.Min(1.0, Vector3d.Dot(up, (sun.position - body.position).normalized)))) * 57.29578;
             Vector3d p = round / r;
             east = (east - axis * Vector3d.Dot(east, axis) - p * Vector3d.Dot(east, p)).normalized;
-            double turn = body.rotationPeriod > 0 ? 2.0 * Math.PI * (ut - now) / body.rotationPeriod : 0.0;
+            double turn = SunRate(body) * (ut - now);
             Vector3d upThen = along + r * (p * Math.Cos(turn) + east * Math.Sin(turn));
             Vector3d toSun = (sun.position - body.position).normalized;
             return Math.Asin(Math.Max(-1.0, Math.Min(1.0, Vector3d.Dot(upThen.normalized, toSun)))) * 57.29578;
@@ -656,7 +692,8 @@ namespace AIBridge.Api
         /// <summary>The first time after now that the sun stands so high there, going up (or down).</summary>
         static double SunAt(CelestialBody body, double lat, double lon, double now, double degrees, bool rising)
         {
-            double day = body != null && body.rotationPeriod > 0 ? body.rotationPeriod : 21600.0;
+            // (a solar day, the sun's round of the sky: Venus's 117 days where the old search went round its 243-day turn once)
+            double rate = Math.Abs(SunRate(body)), day = rate > 1e-12 ? 2.0 * Math.PI / rate : 21600.0;
             double step = day / 720.0, t0 = now + 1.0, e0 = SunElevation(body, lat, lon, now, t0);
             for (double t1 = t0 + step; t1 < now + day * 1.2; t1 += step)
             {
@@ -829,10 +866,11 @@ namespace AIBridge.Api
                     if (moons.Count > 0) o.Add("satellites", moons);
                     o.Add("has_surface", b.hasSolidSurface);
                     o.Add("ocean", b.ocean);
-                    if (b.rotates && b.rotationPeriod > 0)
+                    if (b.rotates && b.rotationPeriod != 0)
                     {
-                        double sync = Math.Pow(b.gravParameter * Math.Pow(b.rotationPeriod / (2 * Math.PI), 2), 1.0 / 3.0) - b.Radius;
-                        if (sync + b.Radius < b.sphereOfInfluence) o.Add("synchronous_orbit_m", R(sync, 0));
+                        // (a world turning backward, as Venus does in Real Worlds, has one too, flown the other way round)
+                        double sync = Math.Pow(b.gravParameter * Math.Pow(Math.Abs(b.rotationPeriod) / (2 * Math.PI), 2), 1.0 / 3.0) - b.Radius;
+                        if (sync + b.Radius < b.sphereOfInfluence) { o.Add("synchronous_orbit_m", R(sync, 0)); if (b.rotationPeriod < 0) o.Add("turns_backward", true); }
                     }
                 }
                 list.Add(o);

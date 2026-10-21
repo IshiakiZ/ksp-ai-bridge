@@ -243,7 +243,7 @@ namespace AIBridge.Pilot
 
         enum State { Intercept, Final, Flare, Rollout, GoAround }
         State state = State.Intercept;
-        bool started, gearDown;
+        bool started, gearDown, circling;
         int attempts = 1;
         double approachSpeed, startAltitude, gearOffset = 1.5, gearAge = -1e9, touchdownUT = -1, touchdownX, floatingSince = -1, flareStartUT, steadySince = -1;
         double x, y;
@@ -287,6 +287,37 @@ namespace AIBridge.Pilot
                     Api.SurfaceApi.Spot fix = Api.SurfaceApi.Offset(v.mainBody, Strip.Lat, Strip.Lon, Strip.Heading + 180, FinalDistance);
                     double toFix = Api.SurfaceApi.GroundDistance(v.mainBody, v.latitude, v.longitude, fix.Lat, fix.Lon);
                     double interceptAltitude = Strip.Altitude + (FinalDistance + AimPoint) * tanGs;
+                    // (Since 2026-10-20: from high up, the height the way to the fix cannot lose is lost first in a descending circle
+                    // round the fix, as a pilot coming home high would. Asked to land from 11 km up and 30 km out (a spaceplane home
+                    // from orbit), it flew straight at the fix, came over the runway 8 km up, went round twice and spiralled down
+                    // for eight minutes.)
+                    double allowed = interceptAltitude + Math.Max(0, toFix - 3000) * 0.10;
+                    if (!circling && v.altitude - allowed > 600 && toFix < 15000)
+                    {
+                        circling = true;
+                        ap.Log.Add("too high for the approach: losing " + Math.Round(v.altitude - interceptAltitude) + " m in a circle round the approach fix first");
+                    }
+                    if (circling && v.altitude < interceptAltitude + 300)
+                    {
+                        circling = false;
+                        hold.MaxSink = 25;
+                        ap.Log.Add("down to " + Math.Round(v.altitude) + " m: to the approach fix");
+                    }
+                    if (circling)
+                    {
+                        // (the fix kept on the left at a radius the aircraft can turn at a 25-degree bank, turning in or out by how far off it is)
+                        double radius = Math.Max(2500, v.srfSpeed * v.srfSpeed / (9.81 * Math.Tan(25 * Aero.Deg2Rad)));
+                        double off = OrbitMath.Clamp((toFix - radius) / radius, -1, 1);
+                        hold.WingsLevel = false;
+                        hold.PitchFloor = null;
+                        hold.BankLimit = 30;
+                        hold.MaxSink = 40;
+                        hold.Heading = Api.SurfaceApi.Bearing(v.latitude, v.longitude, fix.Lat, fix.Lon) + 90 - 60 * off;
+                        hold.VerticalSpeed = -OrbitMath.Clamp((v.altitude - interceptAltitude) / 25, 8, 40);
+                        hold.Speed = approachSpeed * 1.4;
+                        Phase = "losing height round the approach fix, " + Math.Round(v.altitude) + " m, down to " + Math.Round(interceptAltitude + 300) + " m";
+                        break;
+                    }
                     hold.WingsLevel = false;
                     hold.VerticalSpeed = null;
                     hold.PitchFloor = null;
@@ -425,6 +456,7 @@ namespace AIBridge.Pilot
         public override void OnEnd(Autopilot ap)
         {
             GroundSteering.Release(ap);
+            ap.Plane.MaxSink = 25;
             Vessel v = FlightGlobals.ActiveVessel;
             if (v != null && v.Landed)
             {

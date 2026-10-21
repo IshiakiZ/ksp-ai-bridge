@@ -20,7 +20,7 @@ namespace AIBridge.Api
         public static void Register(BridgeHost h)
         {
             host = h;
-            Rpc.Async("plan", "Create a node for a maneuver. params: {maneuver: circularize|set_apoapsis|set_periapsis|transfer|return|correct|match_planes|match_velocity, at, altitude_km, periapsis_km, body, in_seconds}", Plan);
+            Rpc.Async("plan", "Create a node for a maneuver. params: {maneuver: circularize|set_apoapsis|set_periapsis|transfer|rendezvous|return|correct|match_planes|match_velocity, at, altitude_km, periapsis_km, body, in_seconds}. rendezvous: for a target craft on nearly the same orbit (a few km away): a phasing burn so that it is met after one to four orbits; its result's meet_in_s is when (plan match_velocity with in_seconds then).", Plan);
         }
 
         static IEnumerator Plan(Call c)
@@ -30,6 +30,7 @@ namespace AIBridge.Api
             switch (maneuver)
             {
                 case "transfer": case "hohmann": case "transfer_to_target": yield return Transfer(c, v); break;
+                case "rendezvous": case "phasing": case "phase": yield return Rendezvous(c, v); break;
                 case "return": case "return_from_moon": case "return_home": yield return ReturnHome(c, v); break;
                 case "correct": case "correction": case "course_correction": yield return Correct(c, v); break;
                 case "match_planes": case "match_plane": MatchPlanes(c, v); break;
@@ -199,6 +200,90 @@ namespace AIBridge.Api
             else if (targetBody != null)
                 result.Add("next_step", "execute_node, then warp to=soi, then plan circularize at periapsis around " + Places.Name(targetBody) + " and execute it to capture.");
             c.Result = result;
+        }
+
+        /// <summary>
+        /// (Since 2026-10-20.) A rendezvous with a craft on nearly the same orbit: a phasing burn, a little prograde or retrograde,
+        /// so that after one to eight orbits on the new orbit the vessel is back where it burned just as the target gets
+        /// there; then match_velocity at that moment (meet_in_s). The Hohmann transfer ("transfer") waits for the phase between the two
+        /// to come round, and between orbits a few kilometres apart that is days: 2.4 days for the docking test's halves some 9 km
+        /// apart in height (AI Bridge 18.1). Picks the cheapest of one to eight orbits, burning a minute from now or at the orbit's
+        /// next low or high point, never taking the orbit's low point under the air's top (or 5 km over the ground), and refines
+        /// the burn's time and size by the closest approach the game works out.
+        /// </summary>
+        static IEnumerator Rendezvous(Call c, Vessel v)
+        {
+            PatchedConicSolver solver = Solver(v);
+            ITargetable target = v.targetObject;
+            if (target == null) throw new ApiException("Set a target first (set_target): the craft to meet.");
+            Orbit o1 = v.orbit, o2 = target.GetOrbit();
+            if (o2 == null || o2.referenceBody != o1.referenceBody) throw new ApiException("The target must orbit the same body as your vessel.");
+            if (o1.eccentricity >= 1.0 || o2.eccentricity >= 1.0) throw new ApiException("Both orbits must be closed.");
+            CelestialBody body = o1.referenceBody;
+            double mu = body.gravParameter, now = Planetarium.GetUniversalTime();
+            double lead0 = Math.Max(60.0, c.Args.Num("min_lead_s", 60));
+            double floor = body.Radius + (body.atmosphere ? body.atmosphereDepth : 0) + 5000;
+            // (the burn a minute from now, or at the orbit's next low or high point: from the low point a slightly faster orbit stays
+            // clear of the air where one from the high point would not; 2026-10-20, the docking test's halves 26 km apart at 87 km
+            // up: from where the craft was, only a high orbit four times round was clear, 145 m/s each way)
+            var burns = new List<double> { now + lead0 };
+            double toPe = o1.timeToPe, toAp = o1.timeToAp;
+            if (toPe > lead0) burns.Add(now + toPe); else burns.Add(now + toPe + o1.period);
+            if (toAp > lead0) burns.Add(now + toAp); else burns.Add(now + toAp + o1.period);
+            double bestDv = double.MaxValue, bestPeriod = 0, ut0 = now + lead0;
+            int bestK = 0;
+            Vector3d normal = o1.GetOrbitNormal().normalized;
+            double n2 = 2.0 * Math.PI / o2.period;
+            foreach (double burnUT in burns)
+            {
+                Vector3d p1 = o1.getRelativePositionAtUT(burnUT), vel1 = o1.getOrbitalVelocityAtUT(burnUT);
+                Vector3d p2 = o2.getRelativePositionAtUT(burnUT);
+                p2 -= normal * Vector3d.Dot(p2, normal);
+                // (how far the target is ahead along the vessel's way at the burn, in the vessel's plane)
+                double theta = Vector3d.Angle(p1, p2) * Math.PI / 180.0;
+                if (Vector3d.Dot(p2, vel1) < 0) theta = 2.0 * Math.PI - theta;
+                double r0 = p1.magnitude, speed = vel1.magnitude;
+                for (int k = 1; k <= 8; k++)
+                    foreach (int m in new[] { k, k + 1 })
+                    {
+                        // (back at the burn's place after k orbits of period T, as the target has gone round m times less its lead)
+                        double tMeet = (2.0 * Math.PI * m - theta) / n2;
+                        if (tMeet <= 0) continue;
+                        double T = tMeet / k, a = Math.Pow(mu * (T / (2.0 * Math.PI)) * (T / (2.0 * Math.PI)), 1.0 / 3.0);
+                        double other = 2.0 * a - r0;
+                        if (Math.Min(r0, other) < floor || other <= 0) continue;
+                        double dv = Math.Sqrt(mu * (2.0 / r0 - 1.0 / a)) - speed;
+                        // (the cheapest; a little for every orbit waited and every minute to the burn, so that a near-tie goes the quicker way)
+                        double score = Math.Abs(dv) + 0.3 * k + (burnUT - now) / 600.0;
+                        double bestScore = Math.Abs(bestDv) + 0.3 * bestK + (ut0 - now) / 600.0;
+                        if (bestK == 0 || score < bestScore) { bestDv = dv; bestPeriod = T; bestK = k; ut0 = burnUT; }
+                    }
+            }
+            if (bestK == 0) throw new ApiException("No phasing orbit of one to eight turns keeps clear of the air and the ground here; raise the orbit first.");
+            ClearNodes(solver);
+            ManeuverNode node = solver.AddManeuverNode(ut0);
+            node.DeltaV = new Vector3d(0, 0, bestDv);
+            solver.UpdateFlightPlan();
+            double span = bestK * bestPeriod + 0.5 * bestPeriod;
+            Func<double[], double> cost = x =>
+            {
+                // (never a burn less than half a minute off: the search could otherwise walk the node into the past)
+                if (x[0] < now + 30.0) return 1e15;
+                node.UT = x[0];
+                node.DeltaV = new Vector3d(0, 0, x[1]);
+                solver.UpdateFlightPlan();
+                Orbit planned = node.nextPatch;
+                if (planned == null || planned.eccentricity >= 1.0 || planned.PeR < floor) return 1e15;
+                return OrbitMath.ClosestApproach(planned, o2, x[0] + 0.5 * bestPeriod, span, out double _);
+            };
+            double[] xs = { ut0, bestDv };
+            yield return Search(xs, new[] { 20.0, 0.5 }, new[] { 0.05, 0.002 }, cost, 300);
+            Orbit after = node.nextPatch;
+            double meetUT = node.UT, miss = double.NaN;
+            if (after != null) miss = OrbitMath.ClosestApproach(after, o2, node.UT + 0.5 * bestPeriod, span, out meetUT);
+            host.Note("planned a rendezvous with " + target.GetName() + " in " + bestK + " orbit" + (bestK == 1 ? "" : "s") + ": " + Math.Round(node.DeltaV.magnitude, 1) + " m/s");
+            c.Result = new JObj().Add("orbits", bestK).Add("closest_approach_m", Math.Round(miss)).Add("meet_in_s", Math.Round(meetUT - now)).Add("nodes", NavApi.Nodes(v))
+                .Add("next_step", "execute_node, then plan match_velocity with in_seconds = meet_in_s less the time already gone, execute it, then dock.");
         }
 
         static double Mod(double a, double m) { double r = a % m; return r < 0 ? r + m : r; }

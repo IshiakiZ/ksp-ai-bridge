@@ -74,10 +74,25 @@ namespace AIBridge.Pilot
         }
 
         /// <summary>Acceleration every usable engine could give at full throttle in the air here, lit or not.</summary>
-        public static double PotentialThrustAccel(Vessel v)
+        public static double PotentialThrustAccel(Vessel v) => PotentialThrustAccel(v, v.staticPressurekPa * PhysicsGlobals.KpaToAtmospheres);
+
+        /// <summary>
+        /// (2026-10-18) The same at the ground under the vessel, where the air is thickest and an engine made for a vacuum gives least
+        /// (the Terrier a quarter of its thrust at Kerbin's sea level), and never more than here: what a landing on the engine can
+        /// count on at its end.
+        /// </summary>
+        public static double PotentialThrustAccelLow(Vessel v)
+        {
+            CelestialBody body = v.mainBody;
+            double here = PotentialThrustAccel(v);
+            if (body == null || !body.atmosphere) return here;
+            double ground = FlightGlobals.getStaticPressure(Math.Max(0, v.terrainAltitude), body) * PhysicsGlobals.KpaToAtmospheres;
+            return Math.Min(here, PotentialThrustAccel(v, ground));
+        }
+
+        static double PotentialThrustAccel(Vessel v, double pressure)
         {
             double thrust = 0;
-            double pressure = v.staticPressurekPa * PhysicsGlobals.KpaToAtmospheres;
             foreach (Part p in v.parts)
                 foreach (PartModule m in p.Modules)
                     if (m is ModuleEngines e && e.isEnabled && !e.flameout && !e.throttleLocked && e.maxThrust > 0)
@@ -209,7 +224,8 @@ namespace AIBridge.Pilot
                     else if (AllowEngines && powered == null && HasUsableEngine(v))
                     {
                         double gravity = Guidance.LocalGravity(v);
-                        double net = PotentialThrustAccel(v) - gravity;
+                        // (what the engine can do at the bottom, in the thickest air, not what it does up here: see LandProgram.PlanAccel)
+                        double net = PotentialThrustAccelLow(v) - gravity;
                         double sink = -v.verticalSpeed, room = v.radarAltitude - 10;
                         bool noChutes = chuteCount == 0 || !UseChutes;
                         bool chutesTooWeak = open > 0 && AllChutesFullyOpen(v) && v.radarAltitude < 1500 && sink > Math.Max(6.0, TouchdownSpeed * 2.5);

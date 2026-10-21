@@ -36,15 +36,16 @@ namespace AIBridge.Api
             // A place on the planet for a scene on or near the ground; a place beside the ship for one in flight at speed
             // (unless told which: "place" to watch a ship go by and what it leaves behind, "ship" to go along with it).
             bool withShip = lookHold == "ship" || lookHold != "place" && v != null && (v.srfSpeed > 250.0 || v.situation == Vessel.Situations.ORBITING || v.situation == Vessel.Situations.ESCAPING);
+            // (beside the ship's own transform, which the game's floating origin moves the moment it shifts the world)
             if (v != null && withShip)
-                lookAt.transform.position = (Vector3)(v.CoMD + lookFromShip);
+                lookAt.transform.position = (Vector3)((Vector3d)v.transform.position + lookFromShip);
             else lookAt.transform.position = (Vector3)lookBody.GetWorldSurfacePosition(lookLat, lookLon, lookAlt);
         }
 
         public static void Register(BridgeHost h)
         {
             host = h;
-            Rpc.Sync("dev_record", "Development build only: record a scripted stretch of the game. params: {folder, seconds, fps (60), sound: bool (record the sound at normal speed instead of pictures), watch: bool (no pictures and no folder: the camera held so for so long, and the frames a second drawn meanwhile given in dev_record_status as fps), live: bool (pictures of the game as it really runs, as many as it draws, instead of frame-locked; their times go to times.txt), crop: [x, y, w, h] (live only), hide_ui (true), quality (92), look_at: {east, north, up, surface, hold: place|ship (a place on the planet, or one that goes along with the ship; by default the first unless the ship is fast or in orbit)}, camera: {distance, pitch, heading}, orbit_deg_s, orbit_from and orbit_until (seconds: the camera turned only between them), caption, cues: [{at: seconds, do: explode (at_look: true puts it where the camera looks)|destroy|caption|fx|camera|message|rpc, ...}]}", Start);
+            Rpc.Sync("dev_record", "Development build only: record a scripted stretch of the game. params: {folder, seconds, fps (60), sound: bool (record the sound at normal speed instead of pictures), watch: bool (no pictures and no folder: the camera held so for so long, and the frames a second drawn meanwhile given in dev_record_status as fps), live: bool (pictures of the game as it really runs, as many as it draws, instead of frame-locked; their times go to times.txt), raw: bool (live only: the pixels into one file, frames.rgb, not JPEGs), crop: [x, y, w, h] (live only), hide_ui (true), quality (92), look_at: {east, north, up, surface, hold: place|ship (a place on the planet, or one that goes along with the ship; by default the first unless the ship is fast or in orbit)}, camera: {distance, pitch, heading}, orbit_deg_s, orbit_from and orbit_until (seconds: the camera turned only between them), caption, cues: [{at: seconds, do: explode (at_look: true puts it where the camera looks)|destroy|caption|fx|camera|message|rpc, ...}]}", Start);
             Rpc.Sync("dev_record_status", "Development build only: progress of the recording.", a => Status()).AlwaysAllowed = true;
             Rpc.Sync("dev_record_stop", "Development build only: stop the recording.", a => { stopRequested = true; return Status(); });
             Rpc.Sync("dev_ambient", "Development build only: read Unity's ambient light as the game has it, and optionally hold it at something else for a while (to see what the game's shaders make of it). params: {mode: flat|trilight, sky: [r,g,b], equator: [r,g,b], ground: [r,g,b], hold_s (20)}", Ambient).AlwaysAllowed = true;
@@ -108,6 +109,8 @@ namespace AIBridge.Api
         static IEnumerator Watch(Args a, double seconds, List<Cue> cues)
         {
             Prepare(a);
+            // (and the camera turned round what it looks at, as in a live recording: for watching what a turning view does)
+            float orbit = (float)a.Num("orbit_deg_s", 0), orbitFrom = (float)a.Num("orbit_from", 0), orbitUntil = (float)a.Num("orbit_until", 1e9);
             for (int n = 0; n < 12; n++) yield return null;
             float started = Time.realtimeSinceStartup, counted = -1f;
             int next = 0, frames = 0;
@@ -116,6 +119,7 @@ namespace AIBridge.Api
                 double t = Time.realtimeSinceStartup - started;
                 if (t >= seconds) break;
                 while (next < cues.Count && cues[next].At <= t) Run(cues[next++].What);
+                if (orbit != 0f && t >= orbitFrom && t < orbitUntil && FlightCamera.fetch != null) FlightCamera.fetch.camHdg += orbit * Mathf.Deg2Rad * Time.unscaledDeltaTime;
                 HoldTarget();
                 framesDone++;
                 if (t >= Math.Min(1.0, seconds * 0.3)) { if (counted < 0f) counted = Time.realtimeSinceStartup; else frames++; }
@@ -208,7 +212,7 @@ namespace AIBridge.Api
                 // Kept as a place on the planet: the game slides its whole world about under a moving ship.
                 lookBody = FlightGlobals.currentMainBody;
                 lookLat = lookBody.GetLatitude(at); lookLon = lookBody.GetLongitude(at); lookAlt = lookBody.GetAltitude(at);
-                lookFromShip = FlightGlobals.ActiveVessel != null ? at - FlightGlobals.ActiveVessel.CoMD : Vector3d.zero;
+                lookFromShip = FlightGlobals.ActiveVessel != null ? at - (Vector3d)FlightGlobals.ActiveVessel.transform.position : Vector3d.zero;
                 lookHold = (spot.Str("hold") ?? "").ToLowerInvariant();
                 FlightCamera.SetTarget(lookAt.transform);
             }
@@ -240,6 +244,9 @@ namespace AIBridge.Api
                 picture.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0, false);
                 File.WriteAllBytes(Path.Combine(folder, "f" + frame.ToString("D5") + ".jpg"), picture.EncodeToJPG(quality));
                 framesDone = frame + 1;
+                // (on to the next frame's Update before the camera's target is put again: put at the end of this frame, it was put
+                // before the next frame's physics, and a step that shifted the floating origin left it where the world had been)
+                yield return null;
             }
             UnityEngine.Object.Destroy(picture);
             File.WriteAllText(Path.Combine(folder, "clock.txt"), clock.ToString());
@@ -266,6 +273,20 @@ namespace AIBridge.Api
             }
             var picture = new Texture2D(w, h, TextureFormat.RGB24, false);
             var times = new System.Text.StringBuilder();
+            // ("raw": each frame's pixels written as they are, one after another, into frames.rgb (rows from the bottom; its size in
+            // size.txt), not made into a JPEG: the encoding cost 10 to 15 ms a frame at 1280 x 720 on this Mac, which held the game
+            // back as much as what was being looked at. The reading itself still waits for the card.)
+            bool raw = a.Bool("raw", false);
+            FileStream rawOut = raw ? new FileStream(Path.Combine(folder, "frames.rgb"), FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20) : null;
+            byte[] rawBytes = raw ? new byte[w * h * 3] : null;
+            if (raw) File.WriteAllText(Path.Combine(folder, "size.txt"), w + " " + h + "\n");
+            // ("heard": the game's sound taken as well, from the same moment, into sound.wav: a film of something that is never the same
+            // twice, a crash, with its own sound)
+            Tap tap = null;
+            if (a.Bool("heard", false))
+            {
+                foreach (AudioListener l in UnityEngine.Object.FindObjectsOfType<AudioListener>()) if (l.isActiveAndEnabled) { tap = l.gameObject.AddComponent<Tap>(); break; }
+            }
             float started = Time.realtimeSinceStartup;
             int next = 0, frame = 0;
             while (!stopRequested)
@@ -277,12 +298,41 @@ namespace AIBridge.Api
                 HoldTarget();
                 yield return WaitFrameEnd.Instance;
                 picture.ReadPixels(new Rect(x, Screen.height - y - h, w, h), 0, 0, false);
-                File.WriteAllBytes(Path.Combine(folder, "f" + frame.ToString("D5") + ".jpg"), picture.EncodeToJPG(quality));
+                if (raw) { picture.GetRawTextureData<byte>().CopyTo(rawBytes); rawOut.Write(rawBytes, 0, rawBytes.Length); }
+                else File.WriteAllBytes(Path.Combine(folder, "f" + frame.ToString("D5") + ".jpg"), picture.EncodeToJPG(quality));
                 times.Append((Time.realtimeSinceStartup - started).ToString("F4", System.Globalization.CultureInfo.InvariantCulture)).Append(' ').Append(Time.deltaTime.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
                 framesDone = ++frame;
+                // (on to the next frame's Update before the camera's target is put again, as in Pictures: a frame's target put before
+                // that frame's physics was left where the world had been by a step that shifted the floating origin, some 140 m about
+                // 5 s after a lift-off, and the sky leapt for a frame)
+                yield return null;
             }
             UnityEngine.Object.Destroy(picture);
+            if (rawOut != null) rawOut.Dispose();
             File.WriteAllText(Path.Combine(folder, "times.txt"), times.ToString());
+            if (tap != null)
+            {
+                tap.On = false;
+                float[] samples;
+                lock (tap.Samples) samples = tap.Samples.ToArray();
+                int channels = Math.Max(1, tap.Channels), rate = AudioSettings.outputSampleRate;
+                UnityEngine.Object.Destroy(tap);
+                WriteWave(Path.Combine(folder, "sound.wav"), samples, channels, rate);
+            }
+        }
+
+        static void WriteWave(string path, float[] samples, int channels, int rate)
+        {
+            using (var f = new BinaryWriter(File.Create(path)))
+            {
+                f.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+                f.Write(36 + samples.Length * 2);
+                f.Write(System.Text.Encoding.ASCII.GetBytes("WAVEfmt "));
+                f.Write(16); f.Write((short)1); f.Write((short)channels); f.Write(rate); f.Write(rate * channels * 2); f.Write((short)(channels * 2)); f.Write((short)16);
+                f.Write(System.Text.Encoding.ASCII.GetBytes("data"));
+                f.Write(samples.Length * 2);
+                foreach (float s in samples) f.Write((short)Mathf.Clamp(s * 32767f, -32768f, 32767f));
+            }
         }
 
         static IEnumerator Sound(Args a, double seconds, List<Cue> cues)
