@@ -53,6 +53,27 @@ namespace AIBridge.Api
             holder = null;
         }
 
+        /// <summary>
+        /// (Through dev_call: what writing to the game's log costs the game's thread. So many lines, one Debug.Log each, then the same
+        /// lines in one; with the game's own stack-trace setting for plain log lines said. 2026-10-24, the PC: Fragmentation writes
+        /// up to sixty notes in one frame of a crash.)
+        /// </summary>
+        public static string LogCost(string arg)
+        {
+            int n = 50;
+            int.TryParse(arg, out n);
+            n = Mathf.Clamp(n, 1, 2000);
+            var watch = Stopwatch.StartNew();
+            for (int i = 0; i < n; i++) UnityEngine.Debug.Log("[AIBridge] log cost, line " + i + " of " + n + ": a line as long as a crash note is, about a hundred letters");
+            double each = watch.Elapsed.TotalMilliseconds;
+            var lines = new StringBuilder();
+            for (int i = 0; i < n; i++) lines.Append(i > 0 ? "\n" : "").Append("[AIBridge] log cost, line ").Append(i).Append(" of ").Append(n).Append(": a line as long as a crash note is, about a hundred letters");
+            watch = Stopwatch.StartNew();
+            UnityEngine.Debug.Log(lines.ToString());
+            double once = watch.Elapsed.TotalMilliseconds;
+            return n + " lines: " + each.ToString("F2") + " ms one by one (" + (1000.0 * each / n).ToString("F0") + " us a line), " + once.ToString("F2") + " ms in one; stack traces for plain lines: " + Application.GetStackTraceLogType(LogType.Log);
+        }
+
         public static string Report()
         {
             Stop();

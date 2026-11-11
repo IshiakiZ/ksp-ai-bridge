@@ -27,7 +27,7 @@ import urllib.request
 sys.modules.setdefault("ksp_mcp", sys.modules[__name__])
 
 SERVER_NAME = "ksp-ai-bridge"
-SERVER_VERSION = "0.8.0"
+SERVER_VERSION = "0.10.0"
 PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
 # --------------------------------------------------------------------------- locating the game
@@ -282,11 +282,41 @@ def note_events(result):
     return result
 
 
-def wait_in_game(until, total_s, stop_on_event=True):
+def join_watched(kept, part):
+    """The series a slice of a wait watched, added to those of the slices before it (see ksp_wait's watch)."""
+    if not isinstance(part, dict):
+        return kept
+    if kept is None:
+        return {k: (list(v) if isinstance(v, list) else v) for k, v in part.items()}
+    for k, v in part.items():
+        if isinstance(v, list) and isinstance(kept.get(k), list):
+            kept[k].extend(v)
+        else:
+            kept[k] = v
+    return kept
+
+
+def finish_watched(w, most=120):
+    """Times as seconds from the first sample; at most so many samples, evenly taken."""
+    ut = w.pop("ut", None) or []
+    names = [k for k, v in w.items() if isinstance(v, list)]
+    n = len(ut)
+    if n > most:
+        pick = [round(i * (n - 1) / (most - 1)) for i in range(most)]
+        ut = [ut[i] for i in pick]
+        for k in names:
+            w[k] = [w[k][i] for i in pick if i < len(w[k])]
+        w["every_s"] = round((ut[-1] - ut[0]) / max(1, len(ut) - 1), 2) if len(ut) > 1 else w.get("every_s")
+    w["t_s"] = [round(t - ut[0], 1) for t in ut] if ut else []
+    return w
+
+
+def wait_in_game(until, total_s, stop_on_event=True, watch=None, every_s=None):
     """Wait for conditions in slices short enough for any client, up to total_s, honouring cancellation."""
     c = ctx()
     deadline = time.time() + total_s
     first = True
+    watched = None
     while True:
         remaining = deadline - time.time()
         if c.cancelled.is_set():
@@ -295,12 +325,20 @@ def wait_in_game(until, total_s, stop_on_event=True):
         params = {"timeout_s": slice_s, "stop_on_event": stop_on_event}
         if until:
             params["until"] = until
+        if watch:
+            params["watch"] = watch
+            # (the spacing for the whole wait, not for each slice of it)
+            params["every_s"] = every_s if every_s else max(0.5, total_s / 40.0)
         if EVENT_CURSOR["id"] is not None:
             params["since_event"] = EVENT_CURSOR["id"]
         result = rpc("wait", params, timeout=slice_s + 8)
         first = False
         note_events(result)
+        if watch:
+            watched = join_watched(watched, result.pop("watched", None))
         if result.get("stopped_because") != "timeout" or deadline - time.time() <= 0.5:
+            if watched is not None:
+                result["watched"] = finish_watched(watched)
             return result
         v = result.get("vessel") or {}
         c.progress(str(v.get("autopilot") or v.get("flight_plan") or v.get("situation") or "waiting"))
@@ -1239,6 +1277,10 @@ def t_eva(a):
     return text(note_events(rpc("eva", params, timeout=40)))
 
 
+WATCHABLE = """altitude, height (above the ground), surface_speed, orbital_speed, vertical_speed,
+apoapsis, periapsis, time_to_apoapsis, time_to_periapsis, mach, dynamic_pressure (kPa), throttle, thrust (kN),
+mass (t), pitch, heading, roll, g_force, distance_to_target, relative_speed (to the target), dv_left"""
+
 WAIT_CONDITIONS = """program_done (true), ut, altitude_above, altitude_below, apoapsis_above, apoapsis_below,
 periapsis_above, periapsis_below, time_to_apoapsis_below, time_to_periapsis_below, vertical_speed_above,
 vertical_speed_below, speed_above, speed_below (surface speed), height_above_ground_below,
@@ -1254,10 +1296,14 @@ plan has ended)."""
       last call. Conditions: """ + WAIT_CONDITIONS + """
       Example: {"until": {"program_done": true}, "timeout_s": 600}. Ask for as long as you like (up to an
       hour): the server knows how long this client lets a call run and returns "timeout" when that
-      budget ends, so simply call again. The budget grows as longer calls prove to work.""",
+      budget ends, so simply call again. The budget grows as longer calls prove to work.
+      watch: values sampled all through the wait and given back as series ("watched": t_s and one list per
+      value, at most 120 samples), to see how a climb or a burn went and not only where it ended: """ + WATCHABLE + """.""",
       {"until": {"type": "object", "description": "Conditions, any of which ends the wait."},
        "timeout_s": desc(NUM, "Real seconds to wait at most (default 120). The reply's call_budget_s tells you how long one call can currently last."),
-       "stop_on_event": desc(BOOL, "Return early on any new flight event (default true).")},
+       "stop_on_event": desc(BOOL, "Return early on any new flight event (default true)."),
+       "watch": {"type": "array", "items": STR, "description": "Values to sample through the wait, e.g. [\"altitude\", \"apoapsis\", \"pitch\"]."},
+       "every_s": desc(NUM, "Real seconds between samples (default: the wait over 40).")},
       read_only=True, title="Wait")
 def t_wait(a):
     wanted = max(1.0, min(MAX_WAIT_S, float(a.get("timeout_s") or 120)))
@@ -1265,7 +1311,7 @@ def t_wait(a):
     budget = LIMITS.budget(explore=True)
     allowed = max(1.0, min(wanted, budget - c.elapsed() - 4))
     c.exploring = allowed > LIMITS.proven()
-    result = wait_in_game(a.get("until"), allowed, a.get("stop_on_event", True) is not False)
+    result = wait_in_game(a.get("until"), allowed, a.get("stop_on_event", True) is not False, a.get("watch"), a.get("every_s"))
     if result.get("stopped_because") == "timeout" and allowed < wanted - 1:
         result["call_budget_s"] = round(budget)
         result["note"] = "Returned at this client's current call budget, not at your timeout. Call again to keep waiting."

@@ -112,10 +112,22 @@ namespace AIBridge.Pilot
             hook = null;
         }
 
+        float noVesselSince = -1f;
+
         void Tick()
         {
             if (HighLogic.LoadedScene != GameScenes.FLIGHT || !FlightGlobals.ready || FlightGlobals.ActiveVessel == null)
             {
+                // (Still in flight, the game can be between one craft and the next for a moment: as two craft dock it hands the
+                // flight to the joined one, and for a frame there may be none. A docking program let go of then said "FAILED:
+                // aborted (left the flight scene)" for a docking that had latched (2026-10-25). In flight such a moment is waited
+                // out for a second and a half; leaving the flight scene still lets go at once.)
+                if (HighLogic.LoadedScene == GameScenes.FLIGHT && IsEngaged)
+                {
+                    if (noVesselSince < 0f) noVesselSince = Time.realtimeSinceStartup;
+                    if (Time.realtimeSinceStartup - noVesselSince < 1.5f) return;
+                }
+                noVesselSince = -1f;
                 if (Vessel != null || IsEngaged)
                 {
                     if (IsEngaged) Release("left the flight scene", false);
@@ -123,6 +135,7 @@ namespace AIBridge.Pilot
                 }
                 return;
             }
+            noVesselSince = -1f;
             Vessel active = FlightGlobals.ActiveVessel;
             if (active != Vessel)
             {

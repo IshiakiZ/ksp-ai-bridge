@@ -24,7 +24,7 @@ namespace AIBridge.Api
             Rpc.Sync("edit_node", "Change a maneuver node. params: {index, prograde, normal, radial, ut, shift_seconds, add_prograde, add_normal, add_radial}", EditNode);
             Rpc.Sync("remove_nodes", "Delete maneuver nodes. params: {index} (omit for all)", RemoveNodes);
 
-            Rpc.Async("wait", "Block until something happens. params: {timeout_s, until: {...}, stop_on_event}", Wait).AlwaysAllowed = true;
+            Rpc.Async("wait", "Block until something happens. params: {timeout_s, until: {...}, stop_on_event, watch: [names of values sampled through the wait and given back as series], every_s}", Wait).AlwaysAllowed = true;
             Rpc.Async("warp", "Time warp. params: {to: apoapsis|periapsis|node|soi, seconds, ut, lead_s, rate, timeout_s}", WarpCmd);
             Rpc.Async("set_time", "Set the game's clock straight to a later time, without a warp: craft are held on rails for the moment it takes, as a warp holds them (landed ones stay where they stand, orbiting ones go on along their orbits). Forward only. params: {ut, seconds or hours (on from now), sun: degrees above the horizon at the craft (at the space centre outside flight), rising: true (morning, as given) or false (evening)}. On a world whose day is long (Venus's 117 days) the sun reached is a few degrees off the one asked for; the result's sun_deg says where it stands.", SetTimeCmd);
 
@@ -511,10 +511,13 @@ namespace AIBridge.Api
             int firstEvent = c.Args.Has("since_event") ? c.Args.Int("since_event") : Autopilot.I.Log.LastId;
             float started = Time.realtimeSinceStartup;
             double startUT = Planetarium.fetch != null ? Planetarium.GetUniversalTime() : 0;
+            List<string> watch = c.Args.Strings("watch");
+            Watcher watcher = watch != null && watch.Count > 0 ? new Watcher(watch, c.Args.Num("every_s", Math.Max(0.5, timeout / 40.0))) : null;
             string reason = null;
             while (reason == null)
             {
                 Vessel v = HighLogic.LoadedScene == GameScenes.FLIGHT && FlightGlobals.ready ? FlightGlobals.ActiveVessel : null;
+                if (watcher != null && v != null) watcher.Look(v);
                 reason = Met(until, v);
                 if (reason == null && stopOnEvent && Autopilot.I.Log.LastId > firstEvent) reason = "flight event";
                 // (the player has said something to the AI: this is where it hears it, with everything left running as it is)
@@ -538,8 +541,115 @@ namespace AIBridge.Api
                 if (plan != null) o.Add("flight_plan", plan);
             }
             o.Add("last_event_id", Autopilot.I.Log.LastId);
+            if (watcher != null)
+            {
+                Vessel v = HighLogic.LoadedScene == GameScenes.FLIGHT && FlightGlobals.ready ? FlightGlobals.ActiveVessel : null;
+                if (v != null) watcher.Look(v, true);
+                o.Add("watched", watcher.Result());
+            }
             if (ChatApi.Waiting > 0) o.Add("player_messages", ChatApi.Take());
             c.Result = o;
+        }
+
+        /// <summary>
+        /// (Since 0.10.0.) Values watched through a wait, sampled every so many seconds of real time and given back with the reply as
+        /// series, each sample with the game's time: what an AI would have seen had it been told each tick, as kRPC's streams tell a
+        /// client what it asked to watch (the study of other mods, 2026-10-24). An AI is slow beside a rocket and cannot be told
+        /// anything between its calls; so it is told afterwards, how the climb went and not only where it ended. At most 120
+        /// samples: past that every other one is let go and the spacing doubled.
+        /// </summary>
+        sealed class Watcher
+        {
+            public static readonly string[] Known = { "altitude", "height", "surface_speed", "orbital_speed", "vertical_speed", "apoapsis", "periapsis",
+                "time_to_apoapsis", "time_to_periapsis", "mach", "dynamic_pressure", "throttle", "thrust", "mass", "pitch", "heading", "roll",
+                "g_force", "distance_to_target", "relative_speed", "dv_left" };
+            readonly string[] names;
+            readonly List<double>[] series;
+            readonly List<double> times = new List<double>();
+            double every;
+            float next;
+
+            public Watcher(List<string> wanted, double everyS)
+            {
+                var good = new List<string>();
+                foreach (string w in wanted)
+                {
+                    string n = (w ?? "").Trim().ToLowerInvariant();
+                    if (n.Length == 0) continue;
+                    if (Array.IndexOf(Known, n) < 0) throw new ApiException("Unknown value to watch '" + w + "'. Known: " + string.Join(", ", Known));
+                    if (!good.Contains(n)) good.Add(n);
+                }
+                names = good.ToArray();
+                series = new List<double>[names.Length];
+                for (int i = 0; i < names.Length; i++) series[i] = new List<double>();
+                every = OrbitMath.Clamp(everyS, 0.1, 600.0);
+                next = Time.realtimeSinceStartup;
+            }
+
+            /// <summary>A sample, if one is due (or at once: the last, as the wait ends).</summary>
+            public void Look(Vessel v, bool now = false)
+            {
+                if (!now && Time.realtimeSinceStartup < next) return;
+                next = Time.realtimeSinceStartup + (float)every;
+                if (times.Count >= 120)
+                {
+                    for (int k = 0, keep = 0; k < times.Count; k += 2, keep++)
+                    {
+                        times[keep] = times[k];
+                        for (int i = 0; i < names.Length; i++) series[i][keep] = series[i][k];
+                    }
+                    int half = (times.Count + 1) / 2;
+                    times.RemoveRange(half, times.Count - half);
+                    for (int i = 0; i < names.Length; i++) series[i].RemoveRange(half, series[i].Count - half);
+                    every *= 2.0;
+                }
+                times.Add(Planetarium.fetch != null ? R(Planetarium.GetUniversalTime(), 2) : 0.0);
+                Guidance.Attitude(v, out double pitch, out double heading, out double roll);
+                for (int i = 0; i < names.Length; i++) series[i].Add(Value(v, names[i], pitch, heading, roll));
+            }
+
+            static double Value(Vessel v, string name, double pitch, double heading, double roll)
+            {
+                Orbit o = v.orbit;
+                ITargetable target = v.targetObject;
+                switch (name)
+                {
+                    case "altitude": return R(v.altitude, 0);
+                    case "height": return R(v.radarAltitude, 1);
+                    case "surface_speed": return R(v.srfSpeed, 1);
+                    case "orbital_speed": return R(v.obt_speed, 1);
+                    case "vertical_speed": return R(v.verticalSpeed, 1);
+                    case "apoapsis": return o != null && o.eccentricity < 1.0 ? R(o.ApA, 0) : double.NaN;
+                    case "periapsis": return o != null ? R(o.PeA, 0) : double.NaN;
+                    case "time_to_apoapsis": return o != null && o.eccentricity < 1.0 ? R(o.timeToAp, 1) : double.NaN;
+                    case "time_to_periapsis": return o != null ? R(o.timeToPe, 1) : double.NaN;
+                    case "mach": return R(v.mach, 2);
+                    case "dynamic_pressure": return R(v.dynamicPressurekPa, 2);
+                    case "throttle": return v.ctrlState != null ? R(v.ctrlState.mainThrottle, 2) : double.NaN;
+                    case "thrust": { Guidance.EngineStats(v, out double _, out double thrust, out double _, out int _, out int _); return R(thrust, 1); }
+                    case "mass": return R(v.totalMass, 3);
+                    case "pitch": return R(pitch, 1);
+                    case "heading": return R(heading, 1);
+                    case "roll": return R(roll, 1);
+                    case "g_force": return R(v.geeForce, 2);
+                    case "distance_to_target": return target != null && target.GetTransform() != null ? R(((Vector3d)target.GetTransform().position - v.CoMD).magnitude, 1) : double.NaN;
+                    case "relative_speed": return target != null ? R((v.obt_velocity - target.GetObtVelocity()).magnitude, 2) : double.NaN;
+                    case "dv_left": return v.VesselDeltaV != null && v.VesselDeltaV.IsReady ? R(v.VesselDeltaV.TotalDeltaVActual, 0) : double.NaN;
+                }
+                return double.NaN;
+            }
+
+            public JObj Result()
+            {
+                var o = new JObj().Add("every_s", R(every, 2)).Add("ut", new List<object>(times.ConvertAll(t => (object)t)));
+                for (int i = 0; i < names.Length; i++)
+                {
+                    var list = new List<object>(series[i].Count);
+                    foreach (double d in series[i]) list.Add(double.IsNaN(d) || double.IsInfinity(d) ? null : (object)d);
+                    o.Add(names[i], list);
+                }
+                return o;
+            }
         }
 
         /// <summary>A short telemetry line-up for polling loops, a fraction of the size of the full vessel report.</summary>

@@ -28,6 +28,11 @@ namespace AIBridge.Api
 
         static Vector3d lookFromShip;
         static string lookHold = "";
+        // (the place gliding over the ground, where asked: metres a second east and north, and how long it has glided, added up
+        // frame by frame in double. The game's clock is a float, which after some hours of play moves in steps of a millisecond
+        // or more: a glide at 300 m a second read from it stepped 4.7 and 5.3 m in turn; the review of 2026-10-28)
+        static double glideEast, glideNorth, glideGone;
+        static int glideFrame;
 
         static void HoldTarget()
         {
@@ -39,13 +44,26 @@ namespace AIBridge.Api
             // (beside the ship's own transform, which the game's floating origin moves the moment it shifts the world)
             if (v != null && withShip)
                 lookAt.transform.position = (Vector3)((Vector3d)v.transform.position + lookFromShip);
-            else lookAt.transform.position = (Vector3)lookBody.GetWorldSurfacePosition(lookLat, lookLon, lookAlt);
+            else
+            {
+                // (a place gliding over the ground at a steady speed: a camera going on over a place, for what is fixed to the
+                // ground and should stay so as the camera goes)
+                double lat = lookLat, lon = lookLon;
+                if (glideEast != 0.0 || glideNorth != 0.0)
+                {
+                    if (Time.frameCount != glideFrame) { glideGone += Time.deltaTime; glideFrame = Time.frameCount; }
+                    double gone = glideGone, r = lookBody.Radius + lookAlt;
+                    lat += glideNorth * gone / r * (180.0 / Math.PI);
+                    lon += glideEast * gone / (r * Math.Max(Math.Cos(lookLat * Math.PI / 180.0), 0.01)) * (180.0 / Math.PI);
+                }
+                lookAt.transform.position = (Vector3)lookBody.GetWorldSurfacePosition(lat, lon, lookAlt);
+            }
         }
 
         public static void Register(BridgeHost h)
         {
             host = h;
-            Rpc.Sync("dev_record", "Development build only: record a scripted stretch of the game. params: {folder, seconds, fps (60), sound: bool (record the sound at normal speed instead of pictures), watch: bool (no pictures and no folder: the camera held so for so long, and the frames a second drawn meanwhile given in dev_record_status as fps), live: bool (pictures of the game as it really runs, as many as it draws, instead of frame-locked; their times go to times.txt), raw: bool (live only: the pixels into one file, frames.rgb, not JPEGs), crop: [x, y, w, h] (live only), hide_ui (true), quality (92), look_at: {east, north, up, surface, hold: place|ship (a place on the planet, or one that goes along with the ship; by default the first unless the ship is fast or in orbit)}, camera: {distance, pitch, heading}, orbit_deg_s, orbit_from and orbit_until (seconds: the camera turned only between them), caption, cues: [{at: seconds, do: explode (at_look: true puts it where the camera looks)|destroy|caption|fx|camera|message|rpc, ...}]}", Start);
+            Rpc.Sync("dev_record", "Development build only: record a scripted stretch of the game. params: {folder, seconds, fps (60), sound: bool (record the sound at normal speed instead of pictures), watch: bool (no pictures and no folder: the camera held so for so long, and the frames a second drawn meanwhile given in dev_record_status as fps), live: bool (pictures of the game as it really runs, as many as it draws, instead of frame-locked; their times go to times.txt), raw: bool (live only: the pixels into one file, frames.rgb, not JPEGs), crop: [x, y, w, h] (live only), hide_ui (true), quality (92), look_at: {east, north, up, surface, hold: place|ship (a place on the planet, or one that goes along with the ship; by default the first unless the ship is fast or in orbit), glide_east, glide_north (m/s: the place gliding over the ground)}, camera: {distance, pitch, heading}, orbit_deg_s, orbit_from and orbit_until (seconds: the camera turned only between them), caption, cues: [{at: seconds, do: explode (at_look: true puts it where the camera looks)|destroy|caption|fx|camera|message|rpc, ...}]}", Start);
             Rpc.Sync("dev_record_status", "Development build only: progress of the recording.", a => Status()).AlwaysAllowed = true;
             Rpc.Sync("dev_record_stop", "Development build only: stop the recording.", a => { stopRequested = true; return Status(); });
             Rpc.Sync("dev_ambient", "Development build only: read Unity's ambient light as the game has it, and optionally hold it at something else for a while (to see what the game's shaders make of it). params: {mode: flat|trilight, sky: [r,g,b], equator: [r,g,b], ground: [r,g,b], hold_s (20)}", Ambient).AlwaysAllowed = true;
@@ -131,6 +149,9 @@ namespace AIBridge.Api
         static object Start(Args a)
         {
             if (running) throw new ApiException("A recording is already running.");
+            // (nor while the game changes scenes: a place to look at made now would be in the scene going, and the camera's pivot
+            // hung on it would go with it, as in GiveCameraBack below)
+            if (SceneWatch.Loading) throw new ApiException("The game is changing scenes: start the recording once the next one is ready.");
             bool watch = a.Bool("watch", false);
             folder = watch ? a.Str("folder") ?? "" : a.Require("folder");
             if (folder != "") Directory.CreateDirectory(folder);
@@ -183,12 +204,43 @@ namespace AIBridge.Api
             hidInterface = false;
             if (lookAt != null)
             {
-                try { if (FlightGlobals.ActiveVessel != null) FlightCamera.SetTarget(FlightGlobals.ActiveVessel); } catch { }
+                GiveCameraBack(lookAt.transform);
                 UnityEngine.Object.Destroy(lookAt);
                 lookAt = null;
                 lookBody = null;
             }
             running = false;
+        }
+
+        /// <summary>
+        /// The camera back from the place it was held on, before the place is put away. The game hangs its camera's pivot on what
+        /// the camera looks at, and the pivot goes with whatever it hangs on: until 2026-10-25 the place was put away with the pivot
+        /// on it, and took the flight cameras with it (the picture black but for the sun until the next load).
+        /// </summary>
+        static void GiveCameraBack(Transform place)
+        {
+            FlightCamera cam = FlightCamera.fetch;
+            if (cam == null) return;
+            Transform pivot = cam.GetPivot();
+            // (Only while the camera still looks at the place, and not once a scene change is asked for: the game has then hung its
+            // pivot on the planets' own object, which outlives the scene. A quickload taken in the frame a watch ended, as
+            // trailfilm.py's time=1 run and the next run at once had it on 2026-10-25 (the bridge takes the load before it steps the
+            // watch, whose clock is the real one), had the camera given back to the craft of the scene going, and the pivot went with
+            // the craft: the next flight's camera threw as it set out ("SetParent" on what was gone) and every frame after.)
+            if (cam.Target == place && !SceneWatch.Loading)
+            {
+                // (a craft flown that went up in the film cannot have it back: the camera let go of its target by the game's own means)
+                Vessel v = FlightGlobals.ActiveVessel;
+                try
+                {
+                    if (v != null && v.state != Vessel.State.DEAD && v.parts.Count > 0) FlightCamera.SetTarget(v);
+                    else cam.SetTargetNone();
+                }
+                catch (Exception ex) { BridgeHost.LogWarn("recorder: the camera could not be given back: " + ex.Message); }
+            }
+            else if (SceneWatch.Loading) BridgeHost.Log("recorder: the camera left to the scene change under way");
+            // (and the pivot never put away with the place, whatever came of that)
+            if (pivot != null && pivot.IsChildOf(place)) pivot.SetParent(PSystemSetup.Instance != null ? PSystemSetup.Instance.transform : null, true);
         }
 
         static void Prepare(Args a)
@@ -204,6 +256,7 @@ namespace AIBridge.Api
             BridgeHost.DevCaption = a.Str("caption");
             // Look at a spot beside the vessel instead of at the vessel, to put an explosion in the middle.
             Args spot = a.Obj("look_at");
+            glideEast = glideNorth = 0.0;
             if (spot != null && HighLogic.LoadedSceneIsFlight)
             {
                 lookAt = new GameObject("AIBridge camera target");
@@ -214,6 +267,7 @@ namespace AIBridge.Api
                 lookLat = lookBody.GetLatitude(at); lookLon = lookBody.GetLongitude(at); lookAlt = lookBody.GetAltitude(at);
                 lookFromShip = FlightGlobals.ActiveVessel != null ? at - (Vector3d)FlightGlobals.ActiveVessel.transform.position : Vector3d.zero;
                 lookHold = (spot.Str("hold") ?? "").ToLowerInvariant();
+                glideEast = spot.Num("glide_east", 0); glideNorth = spot.Num("glide_north", 0); glideGone = 0.0; glideFrame = Time.frameCount;
                 FlightCamera.SetTarget(lookAt.transform);
             }
             Args camera = a.Obj("camera");

@@ -9,7 +9,7 @@ namespace AIBridge.Api
     {
         public static void Register(BridgeHost h)
         {
-            Rpc.Async("camera", "Move the camera. params: {view: flight|map, distance, pitch, heading, height, focus, fit}", Camera);
+            Rpc.Async("camera", "Move the camera. params: {view: flight|map, distance, pitch, heading, height, focus, fit, mode (in flight: auto|free|orbital|chase|locked, the game's own; chase turns with the way the craft goes)}", Camera);
         }
 
         static IEnumerator Camera(Call c)
@@ -23,7 +23,7 @@ namespace AIBridge.Api
         public static bool Apply(Args a)
         {
             bool any = false;
-            foreach (string key in new[] { "view", "distance", "pitch", "heading", "height", "focus", "fit" }) any |= a.Has(key);
+            foreach (string key in new[] { "view", "distance", "pitch", "heading", "height", "focus", "fit", "mode" }) any |= a.Has(key);
             if (!any) return false;
 
             if (HighLogic.LoadedScene == GameScenes.EDITOR) ApplyEditor(a);
@@ -78,6 +78,15 @@ namespace AIBridge.Api
             if (MapView.MapIsEnabled) { ApplyMap(a); return; }
             FlightCamera cam = FlightCamera.fetch;
             if (cam == null) return;
+            // (the game's own camera modes, first: a heading is reckoned from the mode's own way round)
+            string mode = a.Str("mode");
+            if (!string.IsNullOrEmpty(mode))
+            {
+                FlightCamera.Modes m;
+                try { m = (FlightCamera.Modes)Enum.Parse(typeof(FlightCamera.Modes), mode, true); }
+                catch (ArgumentException) { throw new ApiException("The camera's mode is one of auto, free, orbital, chase and locked."); }
+                FlightCamera.SetModeImmediate(m);
+            }
             if (a.Has("pitch")) cam.camPitch = Mathf.Clamp((float)a.Num("pitch") * Mathf.Deg2Rad, cam.minPitch, cam.maxPitch);
             if (a.Has("heading")) cam.camHdg = (float)a.Num("heading") * Mathf.Deg2Rad;
             if (a.Has("distance")) cam.SetDistanceImmediate(Mathf.Clamp((float)a.Num("distance"), cam.minDistance, cam.maxDistance));

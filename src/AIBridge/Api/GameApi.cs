@@ -19,7 +19,7 @@ namespace AIBridge.Api
             host = h;
 #if DEV
             // Testing aids, present only in the hot-reload development build.
-            Rpc.Sync("dev_set_orbit", "Development build only: put the vessel being flown into a circular orbit, like the game's debug menu. params: {body, altitude_km, inclination}", a =>
+            Rpc.Sync("dev_set_orbit", "Development build only: put the vessel being flown into a circular orbit, like the game's debug menu. With periapsis_km, an orbit from altitude_km down to that instead: the vessel put on its way down at start_km (its highest point if not given), and with periapsis_sun_deg its lowest point so many degrees past the point under the sun, the way it goes (0: under the sun, by day; 180: at midnight). params: {body, altitude_km, inclination, periapsis_km, start_km, periapsis_sun_deg}", a =>
             {
                 Vessel v = FlightApi.Active();
                 if (HighLogic.CurrentGame == null || HighLogic.CurrentGame.Mode != Game.Modes.SANDBOX) throw new ApiException("Only in sandbox saves.");
@@ -29,8 +29,38 @@ namespace AIBridge.Api
                 CelestialBody body = FlightGlobals.Bodies[index];
                 double altitude = a.Num("altitude_km", (body.atmosphere ? body.atmosphereDepth + 10000 : 15000) / 1000.0) * 1000.0;
                 Pilot.Autopilot.I.Release("orbit set for testing", true);
-                FlightGlobals.fetch.SetShipOrbit(index, 0.0, body.Radius + altitude, a.Num("inclination", 0), 0, 0, 0, 0);
-                return new JObj().Add("body", Places.Name(body)).Add("altitude_m", altitude);
+                if (!a.Has("periapsis_km"))
+                {
+                    FlightGlobals.fetch.SetShipOrbit(index, 0.0, body.Radius + altitude, a.Num("inclination", 0), 0, 0, 0, 0);
+                    return new JObj().Add("body", Places.Name(body)).Add("altitude_m", altitude);
+                }
+                // (A descent as it really goes, for films of a re-entry: the vessel put above the air on an orbit that dips into it,
+                // falling of itself from there, so that it meets the air along its own path and can be turned to it beforehand. Set
+                // in the air instead, a craft kept whatever way it had been facing, and went in sideways.)
+                double low = a.Num("periapsis_km") * 1000.0;
+                double rA = body.Radius + Math.Max(altitude, low), rP = body.Radius + Math.Min(altitude, low);
+                double sma = 0.5 * (rA + rP), ecc = (rA - rP) / (rA + rP), inc = a.Num("inclination", 0);
+                double rStart = body.Radius + Pilot.OrbitMath.Clamp(a.Num("start_km", (rA - body.Radius) / 1000.0) * 1000.0, rP - body.Radius, rA - body.Radius);
+                // (where on the way down, from the highest point (half a turn) to the lowest (a whole one), the orbit is that far out)
+                double cosTrue = ecc > 1e-9 ? Pilot.OrbitMath.Clamp((sma * (1.0 - ecc * ecc) / rStart - 1.0) / ecc, -1.0, 1.0) : -1.0;
+                double trueAt = 2.0 * Math.PI - Math.Acos(cosTrue);
+                double eccAt = 2.0 * Math.Atan(Math.Sqrt((1.0 - ecc) / (1.0 + ecc)) * Math.Tan(trueAt / 2.0));
+                double mean = eccAt - ecc * Math.Sin(eccAt);
+                if (mean < 0.0) mean += 2.0 * Math.PI;
+                double argPe = 0.0;
+                if (a.Has("periapsis_sun_deg"))
+                {
+                    // (the sun's way from the lowest point, in the orbit's plane and the way the vessel goes; the lowest point turned
+                    // round by that, and by as much again as asked)
+                    var trial = new Orbit(inc, ecc, sma, 0.0, 0.0, mean, Planetarium.GetUniversalTime(), body);
+                    Vector3d p = trial.getRelativePositionFromTrueAnomaly(0.0).normalized, q = trial.getRelativePositionFromTrueAnomaly(Math.PI / 2.0).normalized;
+                    Vector3d sun = (Planetarium.fetch.Sun.position - body.position).xzy;
+                    argPe = Math.Atan2(Vector3d.Dot(sun, q), Vector3d.Dot(sun, p)) * 180.0 / Math.PI + a.Num("periapsis_sun_deg");
+                    argPe = (argPe % 360.0 + 360.0) % 360.0;
+                }
+                FlightGlobals.fetch.SetShipOrbit(index, ecc, sma, inc, 0.0, mean, argPe, 0.0);
+                return new JObj().Add("body", Places.Name(body)).Add("apoapsis_m", rA - body.Radius).Add("periapsis_m", rP - body.Radius)
+                    .Add("start_m", rStart - body.Radius).Add("arg_pe_deg", argPe);
             });
             Rpc.Sync("dev_set_position", "Development build only: put the vessel being flown at a place on (or over) any body, like the game's debug menu. params: {body, lat, lon, altitude_m (above the ground there, or above sea level with asl: true), asl: bool, ease: bool (default true: let down gently onto the surface), heading: the compass bearing it is set down facing (default 0, north). Kerbals standing near by are found a metre or two off a moment later (the game pins a standing kerbal to the world, and the pins do not move with the world when it is shifted): to set kerbals out side by side use eva put, sun_deg: instead of lon, the place on that latitude where the sun stands so high, land: bool (on a body with seas, the nearest dry spot to that)}", a =>
             {
@@ -111,10 +141,16 @@ namespace AIBridge.Api
                 return new JObj().Add(field.Name, field.GetValue(null).ToString());
             });
             Rpc.Sync("dev_fx_reload", "Development build only (built with FXDEV=1): replace the running Volumetric Explosions with the copy in this build.", DevFxReload);
-            Rpc.Sync("dev_mods_reload", "Development build only (built with MODSDEV=1): replace the running copies of Keystone and the mods that stand on it with the ones in this build.", DevModsReload);
+            Rpc.Sync("dev_mods_reload", "Development build only (built with MODSDEV=1): replace the running copies of Keystone and the mods that stand on it with the ones in this build. params (optional): {only: \"NaturalWeather,NaturalLight\" (those mods alone, by namespace), start: false (the running copies only taken out, none started)}", DevModsReload);
+            Rpc.Sync("dev_mods_auto", "Development build only: the development copies of the mods swapped in at every scene's first frame (as dev_mods_reload does), so that they begin with the scene as the release copies do. params: {on: bool}.", DevModsAuto);
             Rpc.Sync("dev_call", "Development build only: call a static method of this build that returns text, and takes nothing or (with arg) one piece of text. params: {type: full name, e.g. SmoothPortraits.Portraits, method, arg}", a =>
             {
                 Type type = System.Reflection.Assembly.GetExecutingAssembly().GetType(a.Str("type") ?? "");
+                // (and where this build has none, an installed mod's own: its development methods, where that mod itself was built
+                // with DEV and is loaded as the game loads it, with no copy of this build's beside it)
+                if (type == null)
+                    foreach (System.Reflection.Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
+                        if ((type = loaded.GetType(a.Str("type") ?? "")) != null) break;
                 if (type == null) throw new ApiException("This build has no type '" + a.Str("type") + "'.");
                 bool given = a.Has("arg");
                 System.Reflection.MethodInfo method = type.GetMethod(a.Str("method") ?? "Stats", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static, null, given ? new[] { typeof(string) } : Type.EmptyTypes, null);
@@ -258,6 +294,7 @@ namespace AIBridge.Api
                 return list;
             });
             Rpc.Async("dev_destroy", "Development build only: blow up parts of the vessel being flown, the way a crash does (the game's own explode call for each part). params: {count (default all), over_s (default 1), match: only parts whose name contains this}", DevDestroy);
+            Rpc.Async("dev_frame_times", "Development build only: how long every frame takes for so many seconds (nothing drawn, read back or wrapped): their count, the median, the 99th, the longest with when, how many over 33, 50 and 100 ms. params: {seconds (default 10), list: bool (every frame's ms)}", FrameTimes);
             Rpc.Sync("dev_fps", "Development build only: frame rate and how many particles are alive.", a =>
             {
                 int particles = 0, systems = 0;
@@ -408,6 +445,26 @@ namespace AIBridge.Api
                  .Add("color_space", QualitySettings.activeColorSpace.ToString());
                 return o;
             });
+            Rpc.Sync("dev_flares", "Development build only: every lens flare in the scene (Unity's LensFlare, and any component whose type is named for a flare: Scatterer's, Cinema Camera's), each with its object, whether it is on and how bright; off / on: a component's object name or type name to switch off or back on. params: {off, on}", a =>
+            {
+                string off = a.Str("off"), on = a.Str("on");
+                var list = new List<object>();
+                foreach (Behaviour b in UnityEngine.Object.FindObjectsOfType<Behaviour>())
+                {
+                    if (b == null) continue;
+                    string type = b.GetType().FullName ?? "";
+                    bool flare = b is LensFlare || type.IndexOf("Flare", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (!flare) continue;
+                    string name = b.gameObject.name;
+                    bool hit(string w) => !string.IsNullOrEmpty(w) && (string.Equals(w, name, StringComparison.OrdinalIgnoreCase) || string.Equals(w, type, StringComparison.OrdinalIgnoreCase));
+                    if (hit(off)) b.enabled = false;
+                    if (hit(on)) b.enabled = true;
+                    var o = new JObj().Add("type", type).Add("object", name).Add("enabled", b.enabled).Add("active", b.gameObject.activeInHierarchy);
+                    if (b is LensFlare lf) o.Add("brightness", lf.brightness).Add("flare", lf.flare != null ? lf.flare.name : null).Add("colour", lf.color.ToString());
+                    list.Add(o);
+                }
+                return new JObj().Add("flares", list);
+            });
             Rpc.Sync("dev_gfx", "Development build only: what the graphics set-up can do. params: {shaders: [names to look for]}", a =>
             {
                 var o = new JObj();
@@ -451,6 +508,7 @@ namespace AIBridge.Api
             });
 #endif
             Rpc.Sync("help", "List every command with a one-line description.", Help).AlwaysAllowed = true;
+            Rpc.Async("frame_times", "How long every frame takes for so many seconds, by the real clock (nothing drawn, read back or wrapped): their count, the median, the 99th, the longest with when, how many over 33, 50 and 100 ms. params: {seconds (default 10), list: bool (every frame's time too)}", FrameTimes);
             Rpc.Sync("status", "Where the game is right now: scene, save, time, active vessel or editor craft.", Status).AlwaysAllowed = true;
             Rpc.Sync("activity", "Recent AI Bridge activity log. params: {count}", Activity).AlwaysAllowed = true;
             Rpc.Sync("list_saves", "List save games.", ListSaves).AlwaysAllowed = true;
@@ -561,16 +619,72 @@ namespace AIBridge.Api
             return new Color(float.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture), float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture), float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture), 1f);
         }
 
+        // (2026-10-24: Natural Ocean's running copy cost some 20 ms a frame for the first 30-60 s of every flight scene, a copy
+        // swapped in a second or more later nothing of it; its own timings were wanted from the scene's first frame)
+        // (an instance's method: the game's event list reads the handler's owner, and with a static one it throws and adds nothing)
+        sealed class SwapAtLoad
+        {
+            internal void Heard(GameScenes scene)
+            {
+                try { DevModsReload(new Args(new Dictionary<string, object>())); }
+                catch (Exception ex) { UnityEngine.Debug.Log("[AIBridge] dev_mods_auto: " + ex.Message); }
+            }
+        }
+        static SwapAtLoad modsAuto;
+        internal static object DevModsAuto(Args a)
+        {
+            bool on = a.Bool("on", true);
+            if (on && modsAuto == null) { modsAuto = new SwapAtLoad(); GameEvents.onLevelWasLoaded.Add(modsAuto.Heard); }
+            if (!on && modsAuto != null) { GameEvents.onLevelWasLoaded.Remove(modsAuto.Heard); modsAuto = null; }
+            return new JObj().Add("swapped_at_every_load", modsAuto != null);
+        }
+
         internal static object DevModsReload(Args a)
         {
             System.Reflection.Assembly here = System.Reflection.Assembly.GetExecutingAssembly();
             var fresh = new List<Type>();
-            foreach (Type type in here.GetTypes())
+            // (the types that load: where a mod stands on another that is not installed, as Keystone's TUFX bridge does with TUFX
+            // moved aside for a test of the game without it, that mod is left out whole, by its namespace, and the rest swapped in
+            // as ever. Before, the whole swap stopped on it; and with only the types that loaded taken, the bridge's starting
+            // type, which loads, was started and failed in its Awake at every swap on the rest of the bridge; the review of
+            // 2026-10-28)
+            Type[] types;
+            var leftOut = new HashSet<string>();
+            try { types = here.GetTypes(); }
+            catch (System.Reflection.ReflectionTypeLoadException e)
             {
-                if (!typeof(MonoBehaviour).IsAssignableFrom(type) || type.Namespace == null || type.Namespace.StartsWith("AIBridge", StringComparison.Ordinal) || type.Namespace == "VolumetricExplosions") continue;
-                if (type.GetCustomAttributes(typeof(KSPAddon), false).Length > 0) fresh.Add(type);
+                types = Array.FindAll(e.Types, t => t != null);
+                var spaces = new HashSet<string>();
+                foreach (Type type in types) if (type.Namespace != null) spaces.Add(type.Namespace);
+                // (a mod is known by its namespace named in what the loader said of a type it could not load: the type's own
+                // name, or the message, which names the type and the field that stood on the missing library)
+                foreach (Exception why in e.LoaderExceptions)
+                {
+                    string named = (why as TypeLoadException)?.TypeName ?? "", said = why?.Message ?? "";
+                    foreach (string space in spaces)
+                        if (named.StartsWith(space + ".", StringComparison.Ordinal) || said.Contains("'" + space + ".")) leftOut.Add(space);
+                }
+            }
+            foreach (Type type in types)
+            {
+                try
+                {
+                    if (!typeof(MonoBehaviour).IsAssignableFrom(type) || type.Namespace == null || type.Namespace.StartsWith("AIBridge", StringComparison.Ordinal) || type.Namespace == "VolumetricExplosions" || leftOut.Contains(type.Namespace)) continue;
+                    if (type.GetCustomAttributes(typeof(KSPAddon), false).Length > 0) fresh.Add(type);
+                }
+                catch (TypeLoadException) { }
             }
             if (fresh.Count == 0) throw new ApiException("This build does not contain the mods. Build it with MODSDEV=1 ./build.sh dev.");
+            // (only: some of the mods, by their namespaces, "NaturalWeather,NaturalLight"; start false: the running copies only taken
+            // out, none started in their place. For finding which mod's running copy does something: 2026-10-24, a fresh game's
+            // first minute of flight at 36 ms a frame, gone as soon as every mod was swapped)
+            string only = a.Str("only");
+            if (!string.IsNullOrEmpty(only))
+            {
+                var wanted = new HashSet<string>(only.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries));
+                fresh.RemoveAll(t => !wanted.Contains(t.Namespace));
+            }
+            bool start = a.Bool("start", true);
             fresh.Sort((x, y) => (x.Namespace == "Keystone" ? 0 : 1).CompareTo(y.Namespace == "Keystone" ? 0 : 1));
             var names = new HashSet<string>();
             foreach (Type type in fresh) names.Add(type.FullName);
@@ -580,6 +694,7 @@ namespace AIBridge.Api
             var started = new List<object>();
             foreach (Type type in fresh)
             {
+                if (!start) break;
                 var addon = (KSPAddon)type.GetCustomAttributes(typeof(KSPAddon), false)[0];
                 bool belongs = addon.startup == KSPAddon.Startup.Instantly || addon.startup == KSPAddon.Startup.EveryScene || addon.startup == KSPAddon.Startup.AllGameScenes
                     || (addon.startup == KSPAddon.Startup.Flight && HighLogic.LoadedSceneIsFlight) || (addon.startup == KSPAddon.Startup.FlightAndEditor && (HighLogic.LoadedSceneIsFlight || HighLogic.LoadedSceneIsEditor))
@@ -594,7 +709,9 @@ namespace AIBridge.Api
                 new GameObject(type.FullName + " (dev)").AddComponent(type);
                 started.Add(type.FullName);
             }
-            return new JObj().Add("removed", removed).Add("started", started).Add("now_running", here.GetName().Name);
+            var outs = new List<object>();
+            foreach (string space in leftOut) if (!space.StartsWith("AIBridge", StringComparison.Ordinal)) outs.Add(space);
+            return new JObj().Add("removed", removed).Add("started", started).Add("left_out", outs).Add("now_running", here.GetName().Name);
         }
 
         internal static IEnumerator DevDestroy(Call c)
@@ -620,6 +737,48 @@ namespace AIBridge.Api
             c.Result = new JObj().Add("exploded", done);
         }
 #endif
+
+        /// <summary>
+        /// How long every frame takes, for so many seconds from the frame the call is taken in: the time
+        /// between one frame's turn of this coroutine and the next, by the real clock. Nothing is drawn, read back or wrapped, so
+        /// nothing else is timed: for finding a stall's size and moment. 2026-10-24, the PC: the recorder's raw films cost the game
+        /// time and memory of their own, and wrapping methods through Harmony crashed the game there.
+        /// </summary>
+        internal static IEnumerator FrameTimes(Call c)
+        {
+            float seconds = (float)Pilot.OrbitMath.Clamp(c.Args.Num("seconds", 10), 0.5, 120);
+            var ms = new List<float>();
+            var at = new List<float>();
+            float began = Time.realtimeSinceStartup, last = began;
+            yield return null;
+            while (true)
+            {
+                float now = Time.realtimeSinceStartup;
+                ms.Add((now - last) * 1000f); at.Add(now - began); last = now;
+                if (now - began >= seconds) break;
+                yield return null;
+            }
+            var sorted = new List<float>(ms);
+            sorted.Sort();
+            var worst = new List<int>();
+            for (int k = 0; k < ms.Count; k++) worst.Add(k);
+            worst.Sort((x, y) => ms[y].CompareTo(ms[x]));
+            var longest = new List<object>();
+            for (int k = 0; k < Math.Min(8, worst.Count); k++) longest.Add(new JObj().Add("ms", Math.Round(ms[worst[k]], 1)).Add("at_s", Math.Round(at[worst[k]], 2)));
+            int over33 = 0, over50 = 0, over100 = 0;
+            foreach (float m in ms) { if (m > 33.3f) over33++; if (m > 50f) over50++; if (m > 100f) over100++; }
+            var o = new JObj().Add("frames", ms.Count).Add("seconds", Math.Round(at.Count > 0 ? at[at.Count - 1] : 0f, 2))
+                .Add("median_ms", Math.Round(sorted.Count > 0 ? sorted[sorted.Count / 2] : 0f, 2))
+                .Add("p99_ms", Math.Round(sorted.Count > 0 ? sorted[Math.Min(sorted.Count - 1, (int)(0.99 * sorted.Count))] : 0f, 2))
+                .Add("over_33ms", over33).Add("over_50ms", over50).Add("over_100ms", over100).Add("longest", longest);
+            if (c.Args.Bool("list", false))
+            {
+                var all = new List<object>();
+                foreach (float m in ms) all.Add(Math.Round(m, 2));
+                o.Add("ms", all);
+            }
+            c.Result = o;
+        }
 
         static object Help(Args a)
         {

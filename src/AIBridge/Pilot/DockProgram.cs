@@ -23,7 +23,7 @@ namespace AIBridge.Pilot
         string targetName = "the target";
         double startUT, alignedSince = -1, captureSince = -1, rcsAccel = 0.2, clearRadius = 6, lastGoodUT, startMono;
         double axial, lateral, relSpeed, alignError, turnRate;
-        bool turnLogged;
+        bool turnLogged, grabTurnLogged;
         // Self-check of which way the thrusters push.
         double sign = 1, checkUT = -1;
         Vector3d checkVelocity, checkCommand;
@@ -117,11 +117,15 @@ namespace AIBridge.Pilot
             }
             relSpeed = relative.magnitude;
             alignError = Vector3d.Angle(mine.forward, -axis);
-            if (turnRate > 12) { Fail("the target is tumbling at " + Math.Round(turnRate) + "° per second, too fast to follow; steady it first (switch to it and turn SAS on)"); return; }
+            // (Once the ports have caught hold their pull turns the lighter craft round, harder where its own SAS holds against
+            // it, as this program asks of a target: 14° per second on 2026-10-25, and the docking was failed "tumbling" a quarter of
+            // a second before the ports latched. A grab is never taken for a tumble.)
+            bool grabbing = Mine.state != null && Mine.state.Contains("Acquire");
+            if (turnRate > 12 && !grabbing) { Fail("the target is tumbling at " + Math.Round(turnRate) + "° per second, too fast to follow; steady it first (switch to it and turn SAS on)"); return; }
+            if (turnRate > 12 && !grabTurnLogged) { grabTurnLogged = true; ap.Log.Add("the ports' pull turns the target round at " + Math.Round(turnRate) + "° per second"); }
             if (turnRate > 0.3 && !turnLogged) { turnLogged = true; ap.Log.Add("the target is turning at " + Math.Round(turnRate, 1) + "° per second; following it round"); }
 
             // The ports have caught hold: hands off and let them pull together.
-            bool grabbing = Mine.state != null && Mine.state.Contains("Acquire");
             if (grabbing)
             {
                 if (captureSince < 0) { captureSince = ut; ap.Log.Add("docking ports are pulling together"); }
