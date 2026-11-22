@@ -147,10 +147,16 @@ namespace AIBridge.Api
             {
                 Type type = System.Reflection.Assembly.GetExecutingAssembly().GetType(a.Str("type") ?? "");
                 // (and where this build has none, an installed mod's own: its development methods, where that mod itself was built
-                // with DEV and is loaded as the game loads it, with no copy of this build's beside it)
+                // with DEV and is loaded as the game loads it, with no copy of this build's beside it. The newest copy loaded, since
+                // 2026-11-20: a mod's development copy swapped in (MODSDEV) is loaded after the one it replaces, and every earlier
+                // build's stays loaded beside it; the first found, as until then, was the copy the game began with, which no longer
+                // runs ("not running" from Engine Flames' Stats while its flames burned).)
                 if (type == null)
                     foreach (System.Reflection.Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
-                        if ((type = loaded.GetType(a.Str("type") ?? "")) != null) break;
+                    {
+                        Type found = loaded.GetType(a.Str("type") ?? "");
+                        if (found != null) type = found;
+                    }
                 if (type == null) throw new ApiException("This build has no type '" + a.Str("type") + "'.");
                 bool given = a.Has("arg");
                 System.Reflection.MethodInfo method = type.GetMethod(a.Str("method") ?? "Stats", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static, null, given ? new[] { typeof(string) } : Type.EmptyTypes, null);
@@ -235,6 +241,18 @@ namespace AIBridge.Api
                 Type kit = System.Reflection.Assembly.GetExecutingAssembly().GetType("Keystone.Kit");
                 if (kit == null) throw new ApiException("This build does not contain Keystone. Build it with MODSDEV=1 ./build.sh dev.");
                 object mod = kit.GetMethod("Find").Invoke(null, new object[] { a.Str("mod") });
+                if (mod == null)
+                {
+                    // (the development copies not swapped in: the mod as installed, with the installed Keystone, so that a
+                    // release build can be switched from here while it is tried beside other mods)
+                    foreach (System.Reflection.Assembly other in AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        if (other.GetName().Name != "Keystone") continue;
+                        Type installed = other.GetType("Keystone.Kit");
+                        if (installed != null) mod = installed.GetMethod("Find").Invoke(null, new object[] { a.Str("mod") });
+                        if (mod != null) break;
+                    }
+                }
                 if (mod == null) throw new ApiException("No mod named '" + a.Str("mod") + "' has registered.");
                 foreach (object setting in (System.Collections.IEnumerable)mod.GetType().GetProperty("Settings").GetValue(mod, null))
                 {

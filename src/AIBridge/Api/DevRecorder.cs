@@ -57,13 +57,42 @@ namespace AIBridge.Api
                     lon += glideEast * gone / (r * Math.Max(Math.Cos(lookLat * Math.PI / 180.0), 0.01)) * (180.0 / Math.PI);
                 }
                 lookAt.transform.position = (Vector3)lookBody.GetWorldSurfacePosition(lat, lon, lookAlt);
+                KeepCamera();
             }
+        }
+
+        // (A camera held on a place on the ground is kept still in the world, and says so to Keystone's Motion as the Cinema Camera
+        // does: the Smooth Running mod carries the game's camera on with the craft flown between the game's steps, taking a camera
+        // that follows no craft to follow that one. Until 2026-11-16 it carried this one too, by the craft's speed times the part
+        // of a step each frame fell at, for as long as each frame's patches of smoke were being placed and its pictures chosen,
+        // and the camera was back on its place for the drawing: every film of a launch from a held place had its smoke springing
+        // back and forth against the ground, half a metre at 60 m/s, with the beat of the steps (the motion tool's JITTER, every
+        // three frames of a film at thirty a second). Every Keystone there is is told: an installed one and a development build's.)
+        static System.Reflection.MethodInfo[] keepers;
+        static void KeepCamera()
+        {
+            if (keepers == null)
+            {
+                var found = new List<System.Reflection.MethodInfo>();
+                foreach (System.Reflection.Assembly a in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        Type t = a.GetType("Keystone.Motion", false);
+                        System.Reflection.MethodInfo m = t != null ? t.GetMethod("KeepCamera", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static) : null;
+                        if (m != null) found.Add(m);
+                    }
+                    catch (Exception) { }
+                }
+                keepers = found.ToArray();
+            }
+            for (int n = 0; n < keepers.Length; n++) { try { keepers[n].Invoke(null, null); } catch (Exception) { } }
         }
 
         public static void Register(BridgeHost h)
         {
             host = h;
-            Rpc.Sync("dev_record", "Development build only: record a scripted stretch of the game. params: {folder, seconds, fps (60), sound: bool (record the sound at normal speed instead of pictures), watch: bool (no pictures and no folder: the camera held so for so long, and the frames a second drawn meanwhile given in dev_record_status as fps), live: bool (pictures of the game as it really runs, as many as it draws, instead of frame-locked; their times go to times.txt), raw: bool (live only: the pixels into one file, frames.rgb, not JPEGs), crop: [x, y, w, h] (live only), hide_ui (true), quality (92), look_at: {east, north, up, surface, hold: place|ship (a place on the planet, or one that goes along with the ship; by default the first unless the ship is fast or in orbit), glide_east, glide_north (m/s: the place gliding over the ground)}, camera: {distance, pitch, heading}, orbit_deg_s, orbit_from and orbit_until (seconds: the camera turned only between them), caption, cues: [{at: seconds, do: explode (at_look: true puts it where the camera looks)|destroy|caption|fx|camera|message|rpc, ...}]}", Start);
+            Rpc.Sync("dev_record", "Development build only: record a scripted stretch of the game. params: {folder, seconds, fps (60), sound: bool (record the sound at normal speed instead of pictures), watch: bool (no pictures and no folder: the camera held so for so long, and the frames a second drawn meanwhile given in dev_record_status as fps), live: bool (pictures of the game as it really runs, as many as it draws, instead of frame-locked; their times go to times.txt), raw: bool (live only: the pixels into one file, frames.rgb, not JPEGs), crop: [x, y, w, h] (live only), hide_ui (true), quality (92), look_at: {east, north, up, surface, hold: place|ship (a place on the planet, or one that goes along with the ship; by default the first unless the ship is fast or in orbit), glide_east, glide_north (m/s: the place gliding over the ground)}, camera: {distance, pitch, heading, fov}, orbit_deg_s, orbit_from and orbit_until (seconds: the camera turned only between them), caption, cues: [{at: seconds, do: explode (at_look: true puts it where the camera looks)|destroy|caption|fx|camera|message|rpc, ...}]}", Start);
             Rpc.Sync("dev_record_status", "Development build only: progress of the recording.", a => Status()).AlwaysAllowed = true;
             Rpc.Sync("dev_record_stop", "Development build only: stop the recording.", a => { stopRequested = true; return Status(); });
             Rpc.Sync("dev_ambient", "Development build only: read Unity's ambient light as the game has it, and optionally hold it at something else for a while (to see what the game's shaders make of it). params: {mode: flat|trilight, sky: [r,g,b], equator: [r,g,b], ground: [r,g,b], hold_s (20)}", Ambient).AlwaysAllowed = true;

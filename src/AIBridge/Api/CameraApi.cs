@@ -9,7 +9,7 @@ namespace AIBridge.Api
     {
         public static void Register(BridgeHost h)
         {
-            Rpc.Async("camera", "Move the camera. params: {view: flight|map, distance, pitch, heading, height, focus, fit, mode (in flight: auto|free|orbital|chase|locked, the game's own; chase turns with the way the craft goes)}", Camera);
+            Rpc.Async("camera", "Move the camera. params: {view: flight|map, distance, pitch, heading, height, focus, fit, mode (in flight: auto|free|orbital|chase|locked, the game's own; chase turns with the way the craft goes), fov (in flight: the angle of view in degrees, 0.5 to 120, for a long lens on something far off; the game's own is 60)}", Camera);
         }
 
         static IEnumerator Camera(Call c)
@@ -23,7 +23,7 @@ namespace AIBridge.Api
         public static bool Apply(Args a)
         {
             bool any = false;
-            foreach (string key in new[] { "view", "distance", "pitch", "heading", "height", "focus", "fit", "mode" }) any |= a.Has(key);
+            foreach (string key in new[] { "view", "distance", "pitch", "heading", "height", "focus", "fit", "mode", "fov" }) any |= a.Has(key);
             if (!any) return false;
 
             if (HighLogic.LoadedScene == GameScenes.EDITOR) ApplyEditor(a);
@@ -94,6 +94,14 @@ namespace AIBridge.Api
             {
                 Vector3 size = FlightGlobals.ActiveVessel.vesselSize;
                 cam.SetDistanceImmediate(Mathf.Clamp(Mathf.Max(size.x, Mathf.Max(size.y, size.z)) * 1.6f + 6f, cam.minDistance, 500f));
+            }
+            // (the angle of view, for a long lens on something far off, as a photograph of a re-entry from miles away is taken:
+            // the game's narrowest let down to it, if it is narrower)
+            if (a.Has("fov"))
+            {
+                float fov = Mathf.Clamp((float)a.Num("fov"), 0.5f, 120f);
+                if (fov < cam.fovMin) cam.fovMin = fov;
+                cam.SetFoV(fov);
             }
         }
 
